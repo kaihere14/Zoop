@@ -13,6 +13,8 @@ import Testing
 struct FakeBackend: HelperBackend {
     var captureDelay: Duration = .zero
     var captureFailure: HelperFailure?
+    var actionDelay: Duration = .zero
+    var actionRecorder: ActionRecorder?
     var png = Data((0..<3_000_000).map { UInt8($0 % 251) })   // ~3 MB, spans many socket reads
 
     static let session = SessionInfo(uid: Int(getuid()), user: "fake-agent", pid: 1234, onConsole: false,
@@ -24,7 +26,31 @@ struct FakeBackend: HelperBackend {
     func capture(_ options: CaptureOptions) async throws -> (CaptureMetadata, Data) {
         try await Task.sleep(for: captureDelay)
         if let captureFailure { throw captureFailure }
-        return (CaptureMetadata(width: 100, height: 50), png)
+        return (CaptureMetadata(width: 100, height: 50, pointWidth: 200, pointHeight: 100), png)
+    }
+    static let element = ElementInfo(role: "AXButton", title: "7", frame: Rect(x: 10, y: 20, width: 30, height: 40),
+                                     actions: ["AXPress"], pid: 1234, app: "test.app")
+    func inspect(_ point: Point) async throws -> [ElementInfo] { [Self.element] }
+    func elements(_ query: ElementQuery) async throws -> [ElementInfo] { [Self.element] }
+    func openApp(_ bundleID: String) async throws -> AppInfo {
+        AppInfo(bundleID: bundleID, name: "Test", pid: 1234, isActive: false)
+    }
+    func perform(_ action: InputAction) async throws -> ActionReport {
+        await actionRecorder?.record(action)
+        try await Task.sleep(for: actionDelay)
+        return ActionReport(action: action.name, method: .axPress, target: Self.element, pid: 1234,
+                            app: "test.app", axError: 0, landed: nil, detail: "fake action")
+    }
+
+}
+
+actor ActionRecorder {
+    private(set) var actions: [InputAction] = []
+    func record(_ action: InputAction) { actions.append(action) }
+    func waitForFirst() async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while actions.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        guard !actions.isEmpty else { throw HelperFailure(.internalError, "action never reached backend") }
     }
 }
 
@@ -100,8 +126,55 @@ func isFailed(_ state: HelperConnection.State) -> Bool { if case .failed = state
         #expect(try await connection.sessionInfo() == FakeBackend.session)
 
         let frame = try await connection.capture()
-        #expect(frame.metadata == CaptureMetadata(width: 100, height: 50))
+        #expect(frame.metadata == CaptureMetadata(width: 100, height: 50, pointWidth: 200, pointHeight: 100))
         #expect(frame.png == FakeBackend().png)
+        await connection.disconnect()
+    }
+
+    @Test func routesQueriesAppsAndEveryInputAction() async throws {
+        let path = temporarySocketPath()
+        let recorder = ActionRecorder()
+        let server = try startServer(at: path, backend: FakeBackend(actionRecorder: recorder))
+        defer { server.stop() }
+        let connection = HelperConnection(configuration: testConfiguration(path))
+        #expect(try await connection.inspect(at: Point(x: 2, y: 3)) == [FakeBackend.element])
+        #expect(try await connection.elements(ElementQuery(bundleID: "test.app")) == [FakeBackend.element])
+        #expect(try await connection.openApp(bundleID: "test.app").bundleID == "test.app")
+        let actions: [InputAction] = [
+            .click(ClickAction(point: Point(x: 1, y: 2))), .type(text: "hello 🌍\n"),
+            .setText(SetTextAction(text: "replacement")), .key(KeyCombo(key: "a", modifiers: [.command])),
+            .scroll(ScrollAction(point: Point(x: 3, y: 4), deltaY: 5)),
+            .scrollPage(PageScrollAction(point: Point(x: 439, y: 359), direction: .down, pages: 2)),
+        ]
+        for action in actions {
+            let report = try await connection.perform(action)
+            #expect(report.action == action.name)
+            #expect(report.target == FakeBackend.element)
+            #expect(report.landed == nil)
+        }
+        #expect(await recorder.actions == actions)
+        await connection.disconnect()
+    }
+
+    @Test(arguments: [InputAction.click(ClickAction(point: Point(x: 10, y: 20))),
+                      .scrollPage(PageScrollAction(point: Point(x: 439, y: 359), direction: .down))])
+    func neverReplaysInputAfterHelperRestart(_ action: InputAction) async throws {
+        let path = temporarySocketPath()
+        let recorder = ActionRecorder()
+        let backend = FakeBackend(actionDelay: .milliseconds(400), actionRecorder: recorder)
+        var server = try startServer(at: path, backend: backend)
+        defer { server.stop() }
+        let connection = HelperConnection(configuration: testConfiguration(path))
+        _ = try await connection.connect()
+        let click = Task { try await connection.perform(action) }
+        try await recorder.waitForFirst()
+        server.stop()
+        server = try startServer(at: path, backend: backend)
+        await #expect(throws: BridgeError.interrupted(command: action.name)) { try await click.value }
+        // Complete a later request after reconnection, then let the original fake finish.
+        _ = try await connection.sessionInfo()
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(await recorder.actions == [action])
         await connection.disconnect()
     }
 

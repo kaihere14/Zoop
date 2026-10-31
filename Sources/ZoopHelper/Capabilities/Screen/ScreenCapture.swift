@@ -39,7 +39,9 @@ enum ScreenCapture {
         configuration.showsCursor = options.showsCursor
 
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        return (CaptureMetadata(width: image.width, height: image.height, format: "png"), try encodePNG(image))
+        return (CaptureMetadata(width: image.width, height: image.height, format: "png",
+                                pointWidth: CGDisplayBounds(display.displayID).width,
+                                pointHeight: CGDisplayBounds(display.displayID).height), try encodePNG(image))
     }
 
     private static func encodePNG(_ image: CGImage) throws -> Data {

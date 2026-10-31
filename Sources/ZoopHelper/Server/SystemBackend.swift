@@ -4,6 +4,13 @@ import ZoopShared
 
 /// The real backend: answers requests from macOS, inside the agent session.
 struct SystemBackend: HelperBackend {
+    private let actions = SessionActions()
+
+    func inspect(_ point: Point) async throws -> [ElementInfo] { try await actions.inspect(point) }
+    func elements(_ query: ElementQuery) async throws -> [ElementInfo] { try await actions.elements(query) }
+    func openApp(_ bundleID: String) async throws -> AppInfo { try await actions.openApp(bundleID) }
+    func perform(_ action: InputAction) async throws -> ActionReport { try await actions.perform(action) }
+
     func sessionInfo() async -> SessionInfo {
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
         let bounds = CGDisplayBounds(CGMainDisplayID())

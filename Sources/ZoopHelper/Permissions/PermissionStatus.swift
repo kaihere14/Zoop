@@ -18,8 +18,8 @@ enum PermissionStatus {
     /// Shows the system prompt for each missing permission. macOS only shows these while the
     /// agent session is on screen, so start the helper there once (see Docs/SessionBridge.md).
     ///
-    /// All three are requested now, even though only capture uses them today. A permission
-    /// that was never requested stays off with no error. In the prototype, that is why
+    /// Request all three before the first action. A permission that was never requested
+    /// stays off with no error. In the prototype, that is why
     /// keystrokes were silently dropped (missing PostEvent).
     static func requestMissing() {
         if !CGPreflightScreenCaptureAccess() {

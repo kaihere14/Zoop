@@ -11,7 +11,9 @@ import Foundation
 public enum ZoopProtocol {
     /// Bump when a change would make an old app and a new helper (or the reverse)
     /// misunderstand each other. Both sides refuse to talk across a mismatch.
-    public static let version = 1
+    /// v2: input actions, element queries, app launching, point size in capture metadata.
+    /// v3: explicit AX page-scroll action and axScrollPage report method.
+    public static let version = 3
 }
 
 // MARK: - Payload types
@@ -92,14 +94,26 @@ public struct CaptureOptions: Codable, Sendable, Equatable {
 }
 
 public struct CaptureMetadata: Codable, Sendable, Equatable {
+    /// Image size in pixels.
     public var width: Int
     public var height: Int
     public var format: String
+    /// Size of the captured display in points: the coordinate space input actions use.
+    public var pointWidth: Double
+    public var pointHeight: Double
 
-    public init(width: Int, height: Int, format: String = "png") {
+    public init(width: Int, height: Int, format: String = "png", pointWidth: Double, pointHeight: Double) {
         self.width = width
         self.height = height
         self.format = format
+        self.pointWidth = pointWidth
+        self.pointHeight = pointHeight
+    }
+
+    /// Converts a position in this image (pixels) to display points for an input action.
+    /// The AI reads coordinates off the screenshot; the helper needs them in points.
+    public func point(fromPixelX x: Double, y: Double) -> Point {
+        Point(x: x * pointWidth / Double(max(width, 1)), y: y * pointHeight / Double(max(height, 1)))
     }
 }
 
@@ -113,6 +127,14 @@ public enum HelperRequest: Codable, Sendable, Equatable {
     case ping
     case info
     case capture(options: CaptureOptions)
+    /// The element at a point and its ancestors, innermost first. Read-only.
+    case inspect(point: Point)
+    /// Interactive elements of one app, from its accessibility tree. Read-only.
+    case elements(query: ElementQuery)
+    /// Launch an app (or bring it forward) in the agent session.
+    case openApp(bundleID: String)
+    /// Click, type, key combo, set text, wheel scroll or AX page scroll in the agent session.
+    case input(action: InputAction)
 
     public var name: String {
         switch self {
@@ -120,6 +142,10 @@ public enum HelperRequest: Codable, Sendable, Equatable {
         case .ping: "ping"
         case .info: "info"
         case .capture: "capture"
+        case .inspect: "inspect"
+        case .elements: "elements"
+        case .openApp: "openApp"
+        case .input(let action): action.name
         }
     }
 
@@ -131,7 +157,8 @@ public enum HelperRequest: Codable, Sendable, Equatable {
     /// may already have run before the drop, and a second copy would press the button twice.
     public var isReplayable: Bool {
         switch self {
-        case .hello, .ping, .info, .capture: true
+        case .hello, .ping, .info, .capture, .inspect, .elements: true
+        case .openApp, .input: false
         }
     }
 }
@@ -142,6 +169,9 @@ public enum HelperResult: Codable, Sendable, Equatable {
     case info(session: SessionInfo)
     /// The PNG bytes travel as the frame's binary payload, not inside the JSON.
     case capture(frame: CaptureMetadata)
+    case elements(list: [ElementInfo])
+    case app(info: AppInfo)
+    case action(report: ActionReport)
 }
 
 /// A failure reported by the helper itself.
@@ -155,6 +185,10 @@ public struct HelperFailure: Error, Codable, Sendable, Equatable, CustomStringCo
         case permissionDenied
         /// The request could not be decoded or is not supported.
         case badRequest
+        /// No element, app or window matched (for example nothing at the clicked point).
+        case notFound
+        /// The target can't do what was asked (for example set-text on a read-only element).
+        case unsupported
         case internalError
     }
 

@@ -64,11 +64,19 @@ public actor HelperConnection {
         public var ping: Duration
         public var info: Duration
         public var capture: Duration
+        /// inspect and elements. Walking a big accessibility tree can take a few seconds.
+        public var query: Duration
+        public var openApp: Duration
+        public var input: Duration
 
-        public init(ping: Duration = .seconds(2), info: Duration = .seconds(5), capture: Duration = .seconds(15)) {
+        public init(ping: Duration = .seconds(2), info: Duration = .seconds(5), capture: Duration = .seconds(15),
+                    query: Duration = .seconds(10), openApp: Duration = .seconds(15), input: Duration = .seconds(10)) {
             self.ping = ping
             self.info = info
             self.capture = capture
+            self.query = query
+            self.openApp = openApp
+            self.input = input
         }
 
         func timeout(for request: HelperRequest) -> Duration {
@@ -76,6 +84,9 @@ public actor HelperConnection {
             case .hello, .ping: ping
             case .info: info
             case .capture: capture
+            case .inspect, .elements: query
+            case .openApp: openApp
+            case .input: input
             }
         }
     }
@@ -195,20 +206,48 @@ public actor HelperConnection {
         try await ensureConnected()
         let clock = ContinuousClock()
         let start = clock.now
-        _ = try await perform(.ping)
+        _ = try await request(.ping)
         return clock.now - start
     }
 
     public func sessionInfo() async throws -> SessionInfo {
-        let response = try await perform(.info)
+        let response = try await request(.info)
         guard case .info(let session) = response.result else { throw Self.unexpectedReply(to: "info") }
         return session
     }
 
     public func capture(_ options: CaptureOptions = CaptureOptions()) async throws -> CapturedFrame {
-        let response = try await perform(.capture(options: options))
+        let response = try await request(.capture(options: options))
         guard case .capture(let metadata) = response.result else { throw Self.unexpectedReply(to: "capture") }
         return CapturedFrame(metadata: metadata, png: response.payload)
+    }
+
+    /// The element at `point` and its ancestors, innermost first.
+    public func inspect(at point: Point) async throws -> [ElementInfo] {
+        let response = try await request(.inspect(point: point))
+        guard case .elements(let list) = response.result else { throw Self.unexpectedReply(to: "inspect") }
+        return list
+    }
+
+    /// Interactive elements of a running app, with their frames in display points.
+    public func elements(_ query: ElementQuery) async throws -> [ElementInfo] {
+        let response = try await request(.elements(query: query))
+        guard case .elements(let list) = response.result else { throw Self.unexpectedReply(to: "elements") }
+        return list
+    }
+
+    public func openApp(bundleID: String) async throws -> AppInfo {
+        let response = try await request(.openApp(bundleID: bundleID))
+        guard case .app(let info) = response.result else { throw Self.unexpectedReply(to: "openApp") }
+        return info
+    }
+
+    /// Runs one input action. Never replayed: if the connection drops while it runs, this
+    /// throws `.interrupted` because the action may already have happened.
+    public func perform(_ action: InputAction) async throws -> ActionReport {
+        let response = try await request(.input(action: action))
+        guard case .action(let report) = response.result else { throw Self.unexpectedReply(to: action.name) }
+        return report
     }
 
     // MARK: Requests
@@ -217,7 +256,7 @@ public actor HelperConnection {
     ///
     /// If the connection drops mid-request, a replayable request waits for the automatic
     /// reconnect and is sent once more. A non-replayable one fails with `.interrupted`.
-    func perform(_ request: HelperRequest) async throws -> Response {
+    func request(_ request: HelperRequest) async throws -> Response {
         let timeout = config.timeouts.timeout(for: request)
         var replaysLeft = request.isReplayable ? 1 : 0
         while true {

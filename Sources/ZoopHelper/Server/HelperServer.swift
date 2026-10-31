@@ -7,6 +7,10 @@ import ZoopShared
 protocol HelperBackend: Sendable {
     func sessionInfo() async -> SessionInfo
     func capture(_ options: CaptureOptions) async throws -> (CaptureMetadata, Data)
+    func inspect(_ point: Point) async throws -> [ElementInfo]
+    func elements(_ query: ElementQuery) async throws -> [ElementInfo]
+    func openApp(_ bundleID: String) async throws -> AppInfo
+    func perform(_ action: InputAction) async throws -> ActionReport
 }
 
 func helperLog(_ message: String) {
@@ -212,23 +216,24 @@ final class ClientSession: @unchecked Sendable {
     }
 
     private func execute(_ request: HelperRequest) async -> (Result<HelperResult, HelperFailure>, Data) {
-        switch request {
-        case .hello:
-            return (.failure(HelperFailure(.badRequest, "hello was already sent")), Data())
-        case .ping:
-            return (.success(.pong), Data())
-        case .info:
-            return (.success(.info(session: await backend.sessionInfo())), Data())
-        case .capture(let options):
-            do {
+        do {
+            switch request {
+            case .hello: throw HelperFailure(.badRequest, "hello was already sent")
+            case .ping: return (.success(.pong), Data())
+            case .info: return (.success(.info(session: await backend.sessionInfo())), Data())
+            case .capture(let options):
                 let (metadata, png) = try await backend.capture(options)
                 return (.success(.capture(frame: metadata)), png)
-            } catch let failure as HelperFailure {
-                return (.failure(failure), Data())
-            } catch {
-                helperLog("capture failed: \(error)")
-                return (.failure(HelperFailure(.internalError, "capture failed: \(error.localizedDescription)")), Data())
+            case .inspect(let point): return (.success(.elements(list: try await backend.inspect(point))), Data())
+            case .elements(let query): return (.success(.elements(list: try await backend.elements(query))), Data())
+            case .openApp(let bundleID): return (.success(.app(info: try await backend.openApp(bundleID))), Data())
+            case .input(let action): return (.success(.action(report: try await backend.perform(action))), Data())
             }
+        } catch let failure as HelperFailure {
+            return (.failure(failure), Data())
+        } catch {
+            helperLog("\(request.name) failed: \(error)")
+            return (.failure(HelperFailure(.internalError, "\(request.name) failed: \(error.localizedDescription)")), Data())
         }
     }
 
