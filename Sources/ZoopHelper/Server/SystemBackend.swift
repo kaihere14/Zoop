@@ -9,6 +9,7 @@ struct SystemBackend: HelperBackend {
     func inspect(_ point: Point) async throws -> [ElementInfo] { try await actions.inspect(point) }
     func elements(_ query: ElementQuery) async throws -> [ElementInfo] { try await actions.elements(query) }
     func openApp(_ bundleID: String) async throws -> AppInfo { try await actions.openApp(bundleID) }
+    func quitApps(keeping: [String]) async throws -> QuitAppsReport { await actions.quitApps(keeping: keeping) }
     func perform(_ action: InputAction) async throws -> ActionReport { try await actions.perform(action) }
     func permissionPrompts() async throws -> [PermissionPrompt] { try await actions.permissionPrompts() }
     func appDialogs(bundleID: String) async throws -> [PermissionPrompt] { try await actions.appDialogs(bundleID: bundleID) }

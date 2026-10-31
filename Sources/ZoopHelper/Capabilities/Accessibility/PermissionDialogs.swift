@@ -56,17 +56,27 @@ enum PermissionDialogs {
                 var texts: [String] = candidate.context.isEmpty ? [] : [candidate.context]
                 var buttons: [AXElement] = [], labels: [String] = []
                 var secure = false
+                // A static text ending in ":" (such as "Save As:") labels the next field.
+                // It is not shown on its own; the field line carries it with the value.
+                var fieldLabel: String?
                 while index < queue.count, index < 100, ContinuousClock.now < deadline {
                     let element = queue[index]; index += 1
                     let role = element.string(kAXRoleAttribute) ?? ""
                     if element.string(kAXSubroleAttribute) == kAXSecureTextFieldSubrole { secure = true; break }
                     if [kAXStaticTextRole, "AXHeading"].contains(role),
                        let text = element.string(kAXValueAttribute) ?? element.string(kAXTitleAttribute) ?? element.string(kAXDescriptionAttribute),
-                       !text.isEmpty, !texts.contains(text) { texts.append(String(text.prefix(4000))) }
+                       !text.isEmpty, !texts.contains(text) {
+                        let trimmed = text.trimmingCharacters(in: .whitespaces)
+                        if bundleID != nil, trimmed.hasSuffix(":"), trimmed.count <= 40 { fieldLabel = String(trimmed.dropLast()) }
+                        else { texts.append(String(text.prefix(4000))) }
+                    }
                     if bundleID != nil, [kAXTextFieldRole, kAXComboBoxRole, kAXPopUpButtonRole].contains(role),
                        let value = element.string(kAXValueAttribute), !value.isEmpty {
-                        let label = element.string(kAXTitleAttribute) ?? element.string(kAXDescriptionAttribute) ?? "Field"
-                        texts.append("\(label): \(String(value.prefix(4000)))")
+                        let named = [element.string(kAXTitleAttribute), element.string(kAXDescriptionAttribute)]
+                            .compactMap { $0?.trimmingCharacters(in: CharacterSet(charactersIn: ": ")) }.first { !$0.isEmpty }
+                        let line = "\(named ?? fieldLabel ?? "Field"): \(String(value.prefix(4000)))"
+                        if !texts.contains(line) { texts.append(line) }
+                        fieldLabel = nil
                     }
                     if role == kAXButtonRole, element.attribute(kAXEnabledAttribute) as? Bool != false,
                        element.actions.contains(kAXPressAction),

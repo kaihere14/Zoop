@@ -7,11 +7,13 @@ public enum SessionToolName: String, Sendable, CaseIterable, Codable {
     case openApp = "open_app"
     case listElements = "list_elements"
     case inspectPoint = "inspect_point"
+    case readPage = "read_page"
     case click
     case typeText = "type_text"
     case setText = "set_text"
     case pressKey = "press_key"
     case scrollTo = "scroll_to"
+    case wait
     case batch
 }
 
@@ -68,6 +70,23 @@ public enum SessionTools {
     - Scrolling: `scroll_to` sets a scroll area's position from 0 (top) to 1 (bottom) and is \
     verified. For page-sized steps use `press_key` pageup/pagedown on a focused document.
     - Apps: `open_app` launches or brings forward an app by bundle id.
+    - Waiting: `wait` pauses for a few seconds without touching anything, for pages and apps \
+    that are still loading. It can go inside a batch, for example press_key cmd+r then wait 5.
+
+    Web pages: the agent session is not on screen, so Safari often skips drawing animated or \
+    fading content. A screenshot can show a blank or half-drawn page that has in fact loaded. \
+    Do not judge a page by its screenshot. Use `read_page`, which reads the page's text through \
+    Accessibility whether or not it was drawn, and click links by name (`bundle_id` + `element`). \
+    A page that has not loaded is not a failed action: do not click on it. Instead:
+    1. Open the URL and `wait` 10 seconds in the same batch (press_key cmd+l, type_text the URL \
+    with \\n, wait 10), then call `read_page`.
+    2. No page text yet: reload and wait in one batch (press_key cmd+r, wait 10), then `read_page` \
+    again. Repeat up to 3 reloads.
+    3. After 3 reloads, or when the site shows an error, blocks you or lacks the information, use \
+    another source: a search engine (for example https://duckduckgo.com/?q=… or \
+    https://www.google.com/search?q=…), the same site's other pages, or another reputable site. \
+    Say in your result which source the information came from.
+    Only report the task as blocked after several sources have failed.
 
     Not available: drag and drop, hover, mouse-wheel scrolling, selecting text by double click, and \
     anything outside the agent session.
@@ -144,6 +163,19 @@ public enum SessionTools {
                 returns: "`elements`: one line per element, innermost first, in the same format as list_elements.",
                 failures: [staleTarget, needsAccessibility],
                 isReadOnly: true)
+        case .readPage:
+            return ToolDefinition(
+                name: name,
+                summary: "Read the text and links of the page or window an app is showing, through Accessibility.",
+                usage: "Use it to read web pages and documents, and to check whether a page has loaded: it works even when the screenshot is blank because the background session did not draw the page. Lines come in reading order (top to bottom); links are marked. Pass `find` to keep only lines containing any of its words, for example \"₹ price From\". Click a link it lists with click bundle_id + element. Read-only.",
+                parameters: [
+                    ToolParameter("bundle_id", .string, "App to read.", required: false, defaultValue: "com.apple.Safari"),
+                    ToolParameter("find", .string, "Optional words separated by spaces; only lines containing at least one of them are returned (case-insensitive).", required: false),
+                    ToolParameter("max_chars", .integer, "Maximum characters of text to return.", required: false, minimum: 500, maximum: 20000, defaultValue: 6000),
+                ],
+                returns: "`lines` (count), `text` (one line per text element; links as `[link] name`), `truncated`, and `next`. No text means the page has not loaded yet (or the app shows no text).",
+                failures: ["`not_found`: the app is not running. Call open_app first.", needsAccessibility],
+                isReadOnly: true)
         case .click:
             return ToolDefinition(
                 name: name,
@@ -210,11 +242,20 @@ public enum SessionTools {
                 failures: ["`unsupported`: nothing under the point has a scroll bar on that axis, or it cannot be set. Point at the scrolling content itself, or use press_key pagedown.",
                            staleTarget, needsAccessibility, mayHaveRun],
                 isReadOnly: false)
+        case .wait:
+            return ToolDefinition(
+                name: name,
+                summary: "Pause for a few seconds without doing anything in the agent session.",
+                usage: "Use it while a web page or app is still loading, then take a screenshot to check. Typical wait: 10 seconds after opening a URL or reloading, then read_page. Allowed inside batch (for example press_key cmd+r, then wait). Changes nothing.",
+                parameters: [ToolParameter("seconds", .number, "How long to wait, from 0.5 to 15 seconds.", required: false, minimum: 0.5, maximum: 15, defaultValue: 3)],
+                returns: "`waited`: the seconds waited, and `next`.",
+                failures: ["`interrupted`: the task was stopped while waiting."],
+                isReadOnly: true)
         case .batch:
             return ToolDefinition(
                 name: name,
                 summary: "Run several actions in order with one call.",
-                usage: "Use it for steps that do not need a look at the screen in between, such as pressing a known sequence of buttons or filling several fields. Each action names its `tool` (click, type_text, set_text, press_key, scroll_to or open_app) and that tool's arguments as sibling fields, for example {\"tool\": \"click\", \"bundle_id\": \"com.apple.calculator\", \"element\": \"7\"}. All actions are checked before any runs. They run in order and stop at the first failure, `verified: false`, or unconfirmed click (`requires_observation`). After an unconfirmed click, `completed` includes that sent click; inspect it before continuing only the remaining actions. Mouse recovery must be a separate call, never a batch item. Take a screenshot afterwards to confirm the final state.",
+                usage: "Use it for steps that do not need a look at the screen in between, such as pressing a known sequence of buttons or filling several fields. Each action names its `tool` (click, type_text, set_text, press_key, scroll_to, open_app or wait) and that tool's arguments as sibling fields, for example {\"tool\": \"click\", \"bundle_id\": \"com.apple.calculator\", \"element\": \"7\"}. All actions are checked before any runs. They run in order and stop at the first failure, `verified: false`, or unconfirmed click (`requires_observation`). After an unconfirmed click, `completed` includes that sent click; inspect it before continuing only the remaining actions. Mouse recovery must be a separate call, never a batch item. Take a screenshot afterwards to confirm the final state.",
                 parameters: [ToolParameter("actions", .array, "The actions, in order.", minimum: 1, maximum: Double(batchLimit), items: batchItemSchema)],
                 returns: "`completed` and `total` counts and `results`: one compact entry per action that ran (tool, ok, method, verified, target or error); `requires_observation` when paused at an unconfirmed click.",
                 failures: ["`invalid_arguments`: an action is malformed; nothing ran. The message names the action.",
@@ -224,8 +265,8 @@ public enum SessionTools {
         }
     }
 
-    /// Tools allowed inside `batch`: actions only. Observation tools would lose their output.
-    static let batchable: [SessionToolName] = [.click, .typeText, .setText, .pressKey, .scrollTo, .openApp]
+    /// Tools allowed inside `batch`: actions, plus `wait`. Observation tools would lose their output.
+    static let batchable: [SessionToolName] = [.click, .typeText, .setText, .pressKey, .scrollTo, .openApp, .wait]
     static let batchLimit = 25
 
     /// One batch action: `tool` plus the union of the batchable tools' arguments, flattened so

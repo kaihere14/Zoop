@@ -18,7 +18,8 @@ public enum ZoopProtocol {
     ///     scroll, PID mouse fallback). Clicks are Accessibility-only.
     /// v6: explicit PID mouse recovery; v7: observed system dialogs and human choices.
     /// v8: explicit in-app dialog handoff, using the same human-choice response path.
-    public static let version = 8
+    /// v9: quitApps, so a finished task leaves a clean agent session.
+    public static let version = 9
 }
 
 // MARK: - Payload types
@@ -143,6 +144,9 @@ public enum HelperRequest: Codable, Sendable, Equatable {
     case permissionPrompts
     case appDialogs(bundleID: String)
     case respondToPermission(promptID: String, choiceID: String)
+    /// Ask every regular app in the agent session to quit, except Finder, the helper and
+    /// `keeping`. Polite quit only: an app that asks to save changes stays open.
+    case quitApps(keeping: [String])
 
     public var name: String {
         switch self {
@@ -157,6 +161,7 @@ public enum HelperRequest: Codable, Sendable, Equatable {
         case .permissionPrompts: "permissionPrompts"
         case .appDialogs: "appDialogs"
         case .respondToPermission: "respondToPermission"
+        case .quitApps: "quitApps"
         }
     }
 
@@ -169,7 +174,7 @@ public enum HelperRequest: Codable, Sendable, Equatable {
     public var isReplayable: Bool {
         switch self {
         case .hello, .ping, .info, .capture, .inspect, .elements, .permissionPrompts, .appDialogs: true
-        case .openApp, .input, .respondToPermission: false
+        case .openApp, .input, .respondToPermission, .quitApps: false
         }
     }
 }
@@ -184,6 +189,7 @@ public enum HelperResult: Codable, Sendable, Equatable {
     case app(info: AppInfo)
     case action(report: ActionReport)
     case permissionPrompts(list: [PermissionPrompt])
+    case quitApps(report: QuitAppsReport)
 }
 
 /// A failure reported by the helper itself.

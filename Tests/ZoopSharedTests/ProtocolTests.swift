@@ -18,6 +18,7 @@ import Testing
         .permissionPrompts,
         .appDialogs(bundleID: "com.apple.TextEdit"),
         .respondToPermission(promptID: "observed-dialog", choiceID: "exact-choice"),
+        .quitApps(keeping: ["com.apple.Safari"]),
         .input(action: .click(ClickAction(point: Point(x: 1, y: 2), button: .right, count: 2))),
         .input(action: .click(ClickAction(point: Point(x: 10, y: 20), strategy: .mouse, bundleID: "test.app"))),
         .input(action: .type(text: "héllo 🌍\n\t")),
@@ -48,6 +49,9 @@ import Testing
             ResponseEnvelope(id: 8, result: .action(report: ActionReport(action: "setText", method: .axSetValue, landed: false, detail: "mismatch"))),
             ResponseEnvelope(id: 9, result: .action(report: ActionReport(action: "type", method: .pidKeys, landed: true, detail: "verified"))),
             ResponseEnvelope(id: 11, result: .action(report: ActionReport(action: "scrollTo", method: .axScrollBarValue, axError: 0, landed: true, detail: "0.0000 -> 0.5000"))),
+            ResponseEnvelope(id: 12, result: .quitApps(report: QuitAppsReport(
+                quit: [AppInfo(bundleID: "com.apple.Safari", name: "Safari", pid: 7, isActive: false)],
+                stillOpen: [AppInfo(bundleID: "com.apple.TextEdit", name: "TextEdit", pid: 8, isActive: true)]))),
             ResponseEnvelope(id: 0, failure: HelperFailure(.unauthorized, "nope")),
         ]
         for response in responses {
@@ -87,6 +91,7 @@ import Testing
         #expect(HelperRequest.permissionPrompts.isReplayable)
         #expect(HelperRequest.appDialogs(bundleID: "com.apple.TextEdit").isReplayable)
         #expect(!HelperRequest.respondToPermission(promptID: "dialog", choiceID: "allow").isReplayable)
+        #expect(!HelperRequest.quitApps(keeping: []).isReplayable)
         for action in [InputAction.click(ClickAction(point: Point(x: 1, y: 2))), .type(text: "x"),
                        .click(ClickAction(point: Point(x: 1, y: 2), strategy: .mouse, bundleID: "test.app")),
                        .setText(SetTextAction(text: "x")), .key(KeyCombo(key: "return")),

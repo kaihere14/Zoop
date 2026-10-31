@@ -21,20 +21,24 @@ public struct LiveCompanionService: CompanionService {
     private let configuration: @Sendable () -> ModelConfiguration
     private let tools: any ToolRunning
     private let permissions: (any PermissionHandling)?
+    /// Quits the session's apps after a successful task. Nil when tools are injected
+    /// without one (tests), so nothing is quit.
+    private let cleaner: (any SessionCleaning)?
     private let chatModel: (any ChatModel)?
     private let plannerModel: (any ChatModel)?
     private let executorModel: (any ChatModel)?
 
     public init(configuration: ModelConfiguration? = nil,
-                tools: (any ToolRunning)? = nil,
+                tools: (any ToolRunning)? = nil, cleaner: (any SessionCleaning)? = nil,
                 chatModel: (any ChatModel)? = nil, plannerModel: (any ChatModel)? = nil,
                 executorModel: (any ChatModel)? = nil) {
         if let configuration { self.configuration = { configuration } } else { self.configuration = { ModelConfiguration() } }
         if let tools {
-            self.tools = tools; self.permissions = nil
+            self.tools = tools; self.permissions = nil; self.cleaner = cleaner
         } else {
             let connection = HelperConnection(configuration: .init(clientName: "Zoop"))
             self.tools = SessionToolbox(connection: connection); self.permissions = connection
+            self.cleaner = cleaner ?? connection
         }
         self.chatModel = chatModel; self.plannerModel = plannerModel; self.executorModel = executorModel
     }
@@ -71,7 +75,9 @@ public struct LiveCompanionService: CompanionService {
             if let permissions {
                 executionTools = PermissionToolRunner(tools: tools, permissions: permissions, prompter: prompter, onEvent: onEvent)
             } else { executionTools = tools }
-            return await PlanRunner(model: model, tools: executionTools, prompter: prompter).run(plan, approved: true, mode: mode, onEvent: onEvent)
+            let outcome = await PlanRunner(model: model, tools: executionTools, prompter: prompter)
+                .run(plan, approved: true, mode: mode, onEvent: onEvent)
+            return await SessionCleanup.afterTask(outcome, using: cleaner)
         } catch {
             return AgentOutcome(status: .failed, summary: String(describing: error), steps: 0,
                                 usage: ModelUsage(inputTokens: 0, outputTokens: 0))

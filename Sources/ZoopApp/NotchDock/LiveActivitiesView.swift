@@ -83,18 +83,22 @@ private struct AgentQuestionView: View {
                 Text("Choose a button to answer this dialog.").font(.system(size: 10)).foregroundStyle(ZoopTheme.secondary)
             }
             if let permission = question.permission {
+                // Only the dialog text scrolls. The choices stay pinned below it, so a long
+                // Save sheet description can never push the buttons out of sight.
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(question.text).font(.system(size: 11)).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(question.text).font(.system(size: 11)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
                         ForEach(permission.choices) { choice in
                             Button(choice.title) { answer(choice.id) }
-                                .buttonStyle(GlassButtonStyle()).font(.system(size: 11))
+                                .buttonStyle(GlassButtonStyle())
                         }
-                        Button("Leave unchanged and end task") { answer("cancel_permission") }
-                            .buttonStyle(GlassButtonStyle()).font(.system(size: 10))
-                    }
-                }
+                    }.font(.system(size: 11))
+                }.fixedSize(horizontal: false, vertical: true)
+                Button("Leave unchanged and end task") { answer("cancel_permission") }
+                    .buttonStyle(GlassButtonStyle()).font(.system(size: 10))
             } else {
                 ScrollView { Text(question.text).font(.system(size: 11)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                 if question.kind == .confirm {

@@ -27,7 +27,8 @@ public struct PlannerAgent: Sendable {
         guard !shot.isError, let image = shot.image else { throw PlanError.failed("Cannot observe the session: \(shot.text)") }
         history.append(.user("Initial read-only screenshot: \(shot.text)"))
         history.append(Self.imageMessage(image, caption: "Initial agent-session screenshot"))
-        let readOnly = SessionTools.catalog.filter(\.isReadOnly)
+        // Planning observes; it has nothing to wait for.
+        let readOnly = SessionTools.catalog.filter { $0.isReadOnly && $0.name != .wait }
         let allowed = Set(readOnly.map { $0.name.rawValue })
         var observedApps = Set<String>()
         for callNumber in 1...maxCalls {

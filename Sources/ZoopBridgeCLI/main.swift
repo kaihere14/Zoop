@@ -19,6 +19,9 @@ commands:
   dialogs BUNDLE_ID   list an app's sheets/dialogs and their exact choices (read-only)
   elements BUNDLE_ID [--all] [--limit N]
   open BUNDLE_ID      launch or bring forward an app in the agent session
+  quit-apps [BUNDLE_ID...]
+                      quit every app in the agent session except Finder and the
+                      listed ones (apps asking to save changes stay open)
   click X Y [--right] [--double]
   type TEXT           keystrokes to the focused app (quote TEXT as one argument)
   set-text TEXT [--at X Y]
@@ -199,6 +202,7 @@ case "call":
     guard (1...2).contains(options.positional.count) else { fail("call needs TOOL and optional JSON arguments", code: 64) }
     action = nil
 case "open", "elements", "dialogs": requireArguments(1); action = nil
+case "quit-apps": action = nil
 case "inspect": _ = pointArguments(); action = nil
 case "status", "ping", "info", "capture", "watch", "permissions": requireArguments(0); action = nil
 default: fail("unknown command '\(options.command)'", code: 64)
@@ -231,6 +235,7 @@ do {
         case "inspect": printElements(try await connection.inspect(at: pointArguments()))
         case "elements": printElements(try await connection.elements(ElementQuery(bundleID: options.positional[0], interactiveOnly: !options.all, limit: options.limit)))
         case "open": try printJSON(await connection.openApp(bundleID: options.positional[0]))
+        case "quit-apps": try printJSON(await connection.quitApps(keeping: options.positional))
         case "call":
             let toolbox = SessionToolbox(connection: connection)
             let result = await toolbox.call(options.positional[0], argumentsJSON: options.positional.count > 1 ? options.positional[1] : "")

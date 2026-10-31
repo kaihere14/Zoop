@@ -32,7 +32,7 @@ let submittedPlan = #"{"title":"Calculate","steps":[{"summary":"Press 7","kind":
         #expect(await tools.called.map(\.0) == ["screenshot", "list_elements"])
         let requests = await model.requests
         #expect(requests[0].messages.contains { $0.content.contains { if case .image = $0 { true } else { false } } })
-        #expect(Set(requests[0].tools.map(\.name)) == ["screenshot", "session_status", "list_elements", "inspect_point", "submit_plan"])
+        #expect(Set(requests[0].tools.map(\.name)) == ["screenshot", "session_status", "list_elements", "inspect_point", "read_page", "submit_plan"])
         #expect(requests[1].messages.last?.text.contains("read-only") == true)
     }
 
@@ -276,7 +276,8 @@ actor FailingClicks: ToolRunning {
         let click = ("click", #"{"bundle_id":"com.google.Chrome","element":"Send"}"#)
         let model = ScriptedModel([calls(click), calls(click), calls(click), calls(click), calls(click)])
         let tools = FailingClicks()
-        let outcome = await ExecutorAgent(model: model, tools: tools, prompter: FakePrompter(reply: nil)).run(ExecutorTask(request: "x"))
+        let outcome = await ExecutorAgent(model: model, tools: tools, prompter: FakePrompter(reply: nil),
+                                          limits: ExecutorLimits(maxFailedAttempts: 3)).run(ExecutorTask(request: "x"))
         #expect(await tools.clicks == 3)
         #expect(outcome.status == .failed && outcome.summary.contains("Stopped after 3 failed attempts"))
         #expect(outcome.summary.contains("Suggested next step"))

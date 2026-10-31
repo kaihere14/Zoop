@@ -29,6 +29,9 @@ enum ExecutorPrompt {
     - Call report_progress when you start each plan step and when something notable happens. \
     The person sees these short notes in the notch. Send it in the same response as your next \
     action, never as a response on its own.
+    - Zoop quits every app in the agent session after a successful task. Before finish_task \
+    with success true, save any document you created or changed (unless the person asked you \
+    not to); an app with unsaved changes stays open.
     - When the task is done, call finish_task with success true, a short summary of what you did \
     and found, and report_markdown when the task asked for research, a comparison or other \
     written results. If you cannot finish, call finish_task with success false, explain what \
@@ -48,6 +51,10 @@ enum ExecutorPrompt {
     Never repeat the failed action unchanged. You get \(ExecutorLimits().maxFailedAttempts) failed \
     automatic attempts; after that, use the final human dialog fallback if eligible, otherwise \
     stop and report with finish_task as above.
+    - Read web pages with read_page, not screenshots: a loaded page often looks blank in a \
+    screenshot here. If a website has no text or lacks the information, follow the web page steps \
+    above (wait 10 seconds, then up to 3 reloads), then get it from another source. A site named in the task is \
+    the first choice, not the only one. Waiting and reloading are not failed attempts.
     - Be efficient: use list_elements to find targets, do not repeat failed actions unchanged, \
     and take screenshots only when you need to see the screen. Put actions that do not need a \
     look at the screen in between into one batch call, and click named elements by bundle_id \

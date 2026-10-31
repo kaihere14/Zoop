@@ -37,6 +37,10 @@ struct FakeBackend: HelperBackend {
         AppInfo(bundleID: bundleID, name: "Test", pid: 1234, isActive: false)
     }
     func permissionPrompts() async throws -> [PermissionPrompt] { prompts }
+    func quitApps(keeping: [String]) async throws -> QuitAppsReport {
+        QuitAppsReport(quit: [AppInfo(bundleID: "test.app", name: "Test", pid: 1234, isActive: false)],
+                       stillOpen: keeping.map { AppInfo(bundleID: $0, name: $0, pid: 1, isActive: false) })
+    }
     func appDialogs(bundleID: String) async throws -> [PermissionPrompt] { prompts.filter { $0.ownerApp == bundleID && $0.kind == .appDialog } }
     func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
         guard prompts.contains(where: { $0.id == promptID && $0.choices.contains(where: { $0.id == choiceID }) }) else {
@@ -160,6 +164,8 @@ func isFailed(_ state: HelperConnection.State) -> Bool { if case .failed = state
         #expect(try await connection.inspect(at: Point(x: 2, y: 3)) == [FakeBackend.element])
         #expect(try await connection.elements(ElementQuery(bundleID: "test.app")) == [FakeBackend.element])
         #expect(try await connection.openApp(bundleID: "test.app").bundleID == "test.app")
+        let quit = try await connection.quitApps(keeping: ["kept.app"])
+        #expect(quit.quit.map(\.bundleID) == ["test.app"] && quit.stillOpen.map(\.bundleID) == ["kept.app"])
         let actions: [InputAction] = [
             .click(ClickAction(point: Point(x: 1, y: 2))), .type(text: "hello 🌍\n"),
             .setText(SetTextAction(text: "replacement")), .key(KeyCombo(key: "a", modifiers: [.command])),

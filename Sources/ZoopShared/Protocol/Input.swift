@@ -230,6 +230,20 @@ public struct AppInfo: Codable, Sendable, Equatable {
     }
 }
 
+/// What `quitApps` did.
+public struct QuitAppsReport: Codable, Sendable, Equatable {
+    /// Apps that quit.
+    public var quit: [AppInfo]
+    /// Apps still running when the helper stopped waiting, usually because they are asking
+    /// whether to save changes.
+    public var stillOpen: [AppInfo]
+
+    public init(quit: [AppInfo], stillOpen: [AppInfo]) {
+        self.quit = quit
+        self.stillOpen = stillOpen
+    }
+}
+
 /// How the helper carried out an action.
 public enum ActionMethod: String, Codable, Sendable {
     /// Mouse down/up sent only to the app owning the visible target window.

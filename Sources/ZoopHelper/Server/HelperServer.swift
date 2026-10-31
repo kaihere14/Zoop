@@ -14,6 +14,7 @@ protocol HelperBackend: Sendable {
     func permissionPrompts() async throws -> [PermissionPrompt]
     func appDialogs(bundleID: String) async throws -> [PermissionPrompt]
     func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport
+    func quitApps(keeping: [String]) async throws -> QuitAppsReport
 }
 
 func helperLog(_ message: String) {
@@ -235,6 +236,7 @@ final class ClientSession: @unchecked Sendable {
             case .appDialogs(let bundleID): return (.success(.permissionPrompts(list: try await backend.appDialogs(bundleID: bundleID))), Data())
             case .respondToPermission(let promptID, let choiceID):
                 return (.success(.action(report: try await backend.respondToPermission(promptID: promptID, choiceID: choiceID))), Data())
+            case .quitApps(let keeping): return (.success(.quitApps(report: try await backend.quitApps(keeping: keeping))), Data())
             }
         } catch let failure as HelperFailure {
             return (.failure(failure), Data())

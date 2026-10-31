@@ -24,6 +24,11 @@ actor SessionActions {
         defer { release() }
         return try await Apps.open(bundleID)
     }
+    func quitApps(keeping: [String]) async -> QuitAppsReport {
+        await acquire()
+        defer { release() }
+        return await Apps.quitAll(keeping: Set(keeping))
+    }
     func inspect(_ point: Point) throws -> [ElementInfo] {
         try AXElement.requirePermission()
         return try AXElement.at(point).ancestors.map(\.info)

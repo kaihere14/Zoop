@@ -23,6 +23,8 @@ commands:
       --step TEXT       add a plain-language hint to --no-plan (repeatable)
       --max-steps N     model calls before giving up (default 50)
       --save DIR        save every screenshot the executor takes into DIR
+      --keep-apps       leave the agent session's apps open after a successful run
+                        (by default every app except Finder is quit)
 
 model options (override env and ~/.zoop/config.json):
   --provider NAME     anthropic, gemini, openrouter, groq, openai, ollama, lmstudio or custom
@@ -45,6 +47,7 @@ struct Options {
     var approve = false
     var auto = false
     var noPlan = false
+    var keepApps = false
     var traceRuns = 5
     var traceCalls = false
     var traceFile: String?
@@ -69,6 +72,7 @@ func parse() -> Options {
         case "--approve": options.approve = true
         case "--auto": options.auto = true
         case "--no-plan": options.noPlan = true
+        case "--keep-apps": options.keepApps = true
         case "--planner-provider": options.plannerOverrides.provider = value(argument)
         case "--planner-model": options.plannerOverrides.model = value(argument)
         case "--planner-base-url": options.plannerOverrides.baseURL = value(argument)
@@ -248,7 +252,12 @@ case "run", "plan":
         run.cancel()
     }
     interrupt.resume()
-    let outcome = await run.value
+    var outcome = await run.value
+    if options.command == "run", !options.keepApps, outcome.status == .completed {
+        let cleaned = await SessionCleanup.afterTask(outcome, using: connection)
+        if cleaned.summary != outcome.summary { print(cleaned.summary.dropFirst(outcome.summary.count).trimmingCharacters(in: .whitespacesAndNewlines)) }
+        outcome = cleaned
+    }
     await connection.disconnect()
     exit(outcome.status == .completed ? 0 : 1)
 

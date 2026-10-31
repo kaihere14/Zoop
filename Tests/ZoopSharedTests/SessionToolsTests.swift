@@ -107,3 +107,37 @@ import Testing
         #expect(line.count < 200)
     }
 }
+
+@Suite struct WaitToolRunTests {
+    @Test func waitRunsWithoutTheHelperAndInsideABatch() async {
+        let toolbox = SessionToolbox(connection: HelperConnection(configuration: .init(socketPath: "/tmp/zoop-no-helper.sock", clientName: "test")))
+        let waited = await toolbox.call("wait", argumentsJSON: #"{"seconds":0.5}"#)
+        #expect(!waited.isError && waited.content["waited"] == 0.5)
+        #expect(SessionTools.batchable.contains(.wait))
+        let tooLong = await toolbox.call("wait", argumentsJSON: #"{"seconds":60}"#)
+        #expect(tooLong.isError && tooLong.content["error"] == "invalid_arguments")
+    }
+}
+
+@Suite struct ReadPageTests {
+    static func element(_ role: String, _ text: String, x: Double, y: Double) -> ElementInfo {
+        ElementInfo(role: role, title: role == "AXLink" ? text : nil, value: role == "AXLink" ? nil : text,
+                    frame: Rect(x: x, y: y, width: 50, height: 10), actions: [], pid: 1)
+    }
+
+    @Test func readsTextInReadingOrderSkippingChromeAndDuplicates() {
+        let list = [
+            Self.element("AXStaticText", "From ₹99,900", x: 10, y: 200),
+            Self.element("AXMenuBarItem", "File", x: 10, y: 0),
+            Self.element("AXHeading", "MacBook Air", x: 10, y: 100),
+            Self.element("AXLink", "Buy", x: 200, y: 100),
+            Self.element("AXStaticText", "MacBook Air", x: 10, y: 100),
+            Self.element("AXStaticText", "hidden", x: -9899, y: 100),
+        ]
+        let page = SessionToolbox.pageText(list, terms: [], maxChars: 6000)
+        #expect(page.text == "MacBook Air [link] Buy\nFrom ₹99,900" && page.lines == 2 && !page.truncated)
+        let found = SessionToolbox.pageText(list, terms: ["₹"], maxChars: 6000)
+        #expect(found.text == "From ₹99,900")
+        #expect(SessionToolbox.pageText(list, terms: [], maxChars: 15).truncated)
+    }
+}

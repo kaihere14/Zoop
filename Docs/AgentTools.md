@@ -21,6 +21,13 @@ What works, and how:
 - Keys and shortcuts: `press_key` (cmd+l, cmd+a, return, tab, escape, arrows, pageup, pagedown). Keys go to the focused element, or to the frontmost app when nothing reports focus, so app shortcuts work.
 - Scrolling: `scroll_to` sets a scroll area's position from 0 (top) to 1 (bottom) and is verified. For page-sized steps use `press_key` pageup/pagedown on a focused document.
 - Apps: `open_app` launches or brings forward an app by bundle id.
+- Waiting: `wait` pauses for a few seconds without touching anything, for pages and apps that are still loading. It can go inside a batch, for example press_key cmd+r then wait 5.
+
+Web pages: the agent session is not on screen, so Safari often skips drawing animated or fading content. A screenshot can show a blank or half-drawn page that has in fact loaded. Do not judge a page by its screenshot. Use `read_page`, which reads the page's text through Accessibility whether or not it was drawn, and click links by name (`bundle_id` + `element`). A page that has not loaded is not a failed action: do not click on it. Instead:
+1. Open the URL and `wait` 10 seconds in the same batch (press_key cmd+l, type_text the URL with \n, wait 10), then call `read_page`.
+2. No page text yet: reload and wait in one batch (press_key cmd+r, wait 10), then `read_page` again. Repeat up to 3 reloads.
+3. After 3 reloads, or when the site shows an error, blocks you or lacks the information, use another source: a search engine (for example https://duckduckgo.com/?q=… or https://www.google.com/search?q=…), the same site's other pages, or another reputable site. Say in your result which source the information came from.
+Only report the task as blocked after several sources have failed.
 
 Not available: drag and drop, hover, mouse-wheel scrolling, selecting text by double click, and anything outside the agent session.
 
@@ -44,11 +51,13 @@ Every call returns one JSON object. Successful calls have `"ok": true`, the tool
 | `open_app` | no | Launch an app in the agent session, or bring it forward if it is already running. |
 | `list_elements` | yes | List an app's on-screen controls from its accessibility tree. |
 | `inspect_point` | yes | Show the element at a point and the elements that contain it. |
+| `read_page` | yes | Read the text and links of the page or window an app is showing, through Accessibility. |
 | `click` | no | Click through Accessibility, or explicitly try a PID-targeted mouse click at a screenshot position. |
 | `type_text` | no | Type text as keystrokes into the focused element. |
 | `set_text` | no | Replace a text element's entire value through Accessibility. |
 | `press_key` | no | Press a key or keyboard shortcut in the focused app. |
 | `scroll_to` | no | Scroll the scroll area under a point to an absolute position. |
+| `wait` | yes | Pause for a few seconds without doing anything in the agent session. |
 | `batch` | no | Run several actions in order with one call. |
 
 ### `session_status`
@@ -122,6 +131,23 @@ Returns: `elements`: one line per element, innermost first, in the same format a
 Failures:
 
 - `not_found`: nothing is at that point any more. Take a new screenshot or call list_elements.
+- `permission_denied`: Accessibility is not granted to ZoopHelper in the agent session. Stop and tell the person.
+
+### `read_page`
+
+Read the text and links of the page or window an app is showing, through Accessibility. Use it to read web pages and documents, and to check whether a page has loaded: it works even when the screenshot is blank because the background session did not draw the page. Lines come in reading order (top to bottom); links are marked. Pass `find` to keep only lines containing any of its words, for example "₹ price From". Click a link it lists with click bundle_id + element. Read-only.
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `bundle_id` | string | no | App to read. Default `"com.apple.Safari"`. |
+| `find` | string | no | Optional words separated by spaces; only lines containing at least one of them are returned (case-insensitive). |
+| `max_chars` | integer | no | Maximum characters of text to return. 500–20000. Default `6000`. |
+
+Returns: `lines` (count), `text` (one line per text element; links as `[link] name`), `truncated`, and `next`. No text means the page has not loaded yet (or the app shows no text).
+
+Failures:
+
+- `not_found`: the app is not running. Call open_app first.
 - `permission_denied`: Accessibility is not granted to ZoopHelper in the agent session. Stop and tell the person.
 
 ### `click`
@@ -219,9 +245,23 @@ Failures:
 - `permission_denied`: Accessibility is not granted to ZoopHelper in the agent session. Stop and tell the person.
 - `interrupted` or `timed_out`: the action may have happened. Take a screenshot before repeating it.
 
+### `wait`
+
+Pause for a few seconds without doing anything in the agent session. Use it while a web page or app is still loading, then take a screenshot to check. Typical wait: 10 seconds after opening a URL or reloading, then read_page. Allowed inside batch (for example press_key cmd+r, then wait). Changes nothing.
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `seconds` | number | no | How long to wait, from 0.5 to 15 seconds. 0.5–15. Default `3`. |
+
+Returns: `waited`: the seconds waited, and `next`.
+
+Failures:
+
+- `interrupted`: the task was stopped while waiting.
+
 ### `batch`
 
-Run several actions in order with one call. Use it for steps that do not need a look at the screen in between, such as pressing a known sequence of buttons or filling several fields. Each action names its `tool` (click, type_text, set_text, press_key, scroll_to or open_app) and that tool's arguments as sibling fields, for example {"tool": "click", "bundle_id": "com.apple.calculator", "element": "7"}. All actions are checked before any runs. They run in order and stop at the first failure, `verified: false`, or unconfirmed click (`requires_observation`). After an unconfirmed click, `completed` includes that sent click; inspect it before continuing only the remaining actions. Mouse recovery must be a separate call, never a batch item. Take a screenshot afterwards to confirm the final state.
+Run several actions in order with one call. Use it for steps that do not need a look at the screen in between, such as pressing a known sequence of buttons or filling several fields. Each action names its `tool` (click, type_text, set_text, press_key, scroll_to, open_app or wait) and that tool's arguments as sibling fields, for example {"tool": "click", "bundle_id": "com.apple.calculator", "element": "7"}. All actions are checked before any runs. They run in order and stop at the first failure, `verified: false`, or unconfirmed click (`requires_observation`). After an unconfirmed click, `completed` includes that sent click; inspect it before continuing only the remaining actions. Mouse recovery must be a separate call, never a batch item. Take a screenshot afterwards to confirm the final state.
 
 | Argument | Type | Required | Description |
 |---|---|---|---|

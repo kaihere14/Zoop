@@ -68,15 +68,19 @@ public actor HelperConnection {
         public var query: Duration
         public var openApp: Duration
         public var input: Duration
+        /// quitApps waits for apps to finish quitting.
+        public var quitApps: Duration
 
         public init(ping: Duration = .seconds(2), info: Duration = .seconds(5), capture: Duration = .seconds(15),
-                    query: Duration = .seconds(10), openApp: Duration = .seconds(15), input: Duration = .seconds(10)) {
+                    query: Duration = .seconds(10), openApp: Duration = .seconds(15), input: Duration = .seconds(10),
+                    quitApps: Duration = .seconds(20)) {
             self.ping = ping
             self.info = info
             self.capture = capture
             self.query = query
             self.openApp = openApp
             self.input = input
+            self.quitApps = quitApps
         }
 
         func timeout(for request: HelperRequest) -> Duration {
@@ -87,6 +91,7 @@ public actor HelperConnection {
             case .inspect, .elements, .permissionPrompts, .appDialogs: query
             case .openApp: openApp
             case .input, .respondToPermission: input
+            case .quitApps: quitApps
             }
         }
     }
@@ -266,6 +271,13 @@ public actor HelperConnection {
     public func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
         let response = try await request(.respondToPermission(promptID: promptID, choiceID: choiceID))
         guard case .action(let report) = response.result else { throw Self.unexpectedReply(to: "respondToPermission") }
+        return report
+    }
+
+    /// Quits the agent session's apps except Finder and `keeping`. Never replayed.
+    public func quitApps(keeping: [String] = []) async throws -> QuitAppsReport {
+        let response = try await request(.quitApps(keeping: keeping))
+        guard case .quitApps(let report) = response.result else { throw Self.unexpectedReply(to: "quitApps") }
         return report
     }
 

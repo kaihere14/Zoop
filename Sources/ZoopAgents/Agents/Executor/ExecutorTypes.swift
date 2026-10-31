@@ -63,7 +63,7 @@ public struct ExecutorLimits: Sendable {
     public var maxFailedAttempts: Int
 
     public init(maxSteps: Int = 50, maxNudges: Int = 2, keptScreenshots: Int = 1, maxOutputTokens: Int? = nil,
-                maxFailedAttempts: Int = 3) {
+                maxFailedAttempts: Int = 5) {
         self.maxFailedAttempts = maxFailedAttempts
         self.maxSteps = maxSteps
         self.maxNudges = maxNudges

@@ -172,6 +172,29 @@ public struct SessionToolbox: Sendable {
             let axis: ScrollAxis = args.bool("horizontal", default: false) ? .horizontal : .vertical
             return try await act(tool, .scrollTo(ScrollToAction(point: point, axis: axis, fraction: args.number("position")!)))
 
+        case .readPage:
+            let bundleID = args.string("bundle_id") ?? "com.apple.Safari"
+            let maxChars = Int(args.number("max_chars") ?? 6000)
+            let terms = (args.string("find") ?? "").lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+            let list = try await connection.elements(ElementQuery(bundleID: bundleID, interactiveOnly: false, limit: 1000))
+            let page = Self.pageText(list, terms: terms, maxChars: maxChars)
+            var content: [String: JSONValue] = ["app": .string(bundleID), "lines": .number(Double(page.lines)),
+                                                "text": .string(page.text), "truncated": .bool(page.truncated)]
+            if page.lines == 0 {
+                content["next"] = .string(terms.isEmpty
+                    ? "No page text yet. Reload and wait (press_key cmd+r, wait 10) and read again, up to 3 reloads; then try another source."
+                    : "No line contains those words. Read without `find`, or try other words.")
+            } else if page.truncated {
+                content["next"] = .string("Text was cut at max_chars. Use `find` to narrow it, or raise max_chars.")
+            }
+            return Self.success(tool, content)
+
+        case .wait:
+            let seconds = min(max(args.number("seconds") ?? 3, 0.5), 15)
+            do { try await Task.sleep(for: .milliseconds(Int(seconds * 1000))) }
+            catch { throw BridgeError.interrupted(command: "wait") }
+            return Self.success(tool, ["waited": .number(seconds), "next": "Take a screenshot to check whether the page or app has finished loading."])
+
         case .batch:
             return try await runBatch(args.values["actions"] ?? .array([]))
         }
@@ -315,6 +338,37 @@ public struct SessionToolbox: Sendable {
     // MARK: - Formatting
 
     /// One compact line per element: role, name, value, center and actions.
+    /// Text roles that carry page content. Window chrome (menus, toolbar buttons) is left out.
+    static let textRoles: Set<String> = ["AXStaticText", "AXHeading", "AXLink", "AXTextArea", "AXCell"]
+
+    /// Page text in reading order: by row (top to bottom), then left to right. Elements far
+    /// off to the side (hidden at x < -1000) are skipped; content below the fold is kept.
+    static func pageText(_ elements: [ElementInfo], terms: [String], maxChars: Int) -> (text: String, lines: Int, truncated: Bool) {
+        let items: [(y: Double, x: Double, line: String)] = elements.compactMap { element in
+            guard textRoles.contains(element.role), let frame = element.frame, frame.x > -1000, frame.width > 0, frame.height > 0 else { return nil }
+            let raw = element.role == "AXLink" ? (element.name ?? element.value) : (element.value.flatMap { $0.isEmpty ? nil : $0 } ?? element.name)
+            guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+            return (frame.y.rounded(), frame.x, element.role == "AXLink" ? "[link] \(flat)" : flat)
+        }.sorted { ($0.y, $0.x) < ($1.y, $1.x) }
+        // A link's own text element repeats its name; keep only the link line.
+        let linkNames = Set(items.compactMap { $0.line.hasPrefix("[link] ") ? String($0.line.dropFirst(7)) : nil })
+        // Pieces on the same row (such as "From ₹11658.00" and "/mo.") form one line, so a
+        // price is never read without the words around it.
+        var rows: [[String]] = [], rowY = -Double.infinity, seenPieces = Set<String>()
+        for item in items where !linkNames.contains(item.line) {
+            if item.y - rowY > 4 || rows.isEmpty { rows.append([]); rowY = item.y; seenPieces = [] }
+            if seenPieces.insert(item.line).inserted { rows[rows.count - 1].append(item.line) }
+        }
+        var seen = Set<String>(), out: [String] = [], used = 0, truncated = false
+        for line in rows.map({ $0.joined(separator: " ") }) where !line.isEmpty && seen.insert(line).inserted {
+            if !terms.isEmpty, !terms.contains(where: { line.lowercased().contains($0) }) { continue }
+            guard used + line.count + 1 <= maxChars else { truncated = true; break }
+            out.append(line); used += line.count + 1
+        }
+        return (out.joined(separator: "\n"), out.count, truncated)
+    }
+
     static func line(_ element: ElementInfo) -> String {
         func short(_ text: String) -> String {
             let flat = text.replacingOccurrences(of: "\n", with: "\\n")
