@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. Scripts/install-helper.sh fills in the __PLACEHOLDERS__ and installs the result
+  as ~agent/Library/LaunchAgents/com.zoop.helper.plist.
+
+  RunAtLoad               start when the agent user's GUI session starts
+  KeepAlive               restart after a crash (the app's retries cover the gap)
+  LimitLoadToSessionType  Aqua = only in a real graphical session, never at the login window
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.zoop.helper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HELPER_EXECUTABLE__</string>
+        <string>--socket</string><string>__SOCKET_PATH__</string>
+        <string>--allow-uid</string><string>__ALLOWED_UID__</string>
+    </array>
+    <key>LimitLoadToSessionType</key><string>Aqua</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ProcessType</key><string>Interactive</string>
+    <key>StandardErrorPath</key><string>__LOG_PATH__</string>
+</dict>
+</plist>

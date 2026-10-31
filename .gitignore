@@ -38,3 +38,6 @@ config.local.json
 .vscode/
 .idea/
 *.swp
+
+# Screenshots saved by zoop-bridge capture
+frames/
