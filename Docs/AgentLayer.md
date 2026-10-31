@@ -104,7 +104,7 @@ Control tools:
 |---|---|
 | `report_progress` | A short note (and optional plan step and percent) for the notch and live activities. |
 | `ask_user` | Asks the person and waits. Required before anything hard to undo: sending messages, email or posts; purchases, payments or bookings; deleting or overwriting data; submitting forms; changing account, security or system settings. Also used for logins: the executor never types passwords, payment details or one-time codes. |
-| `request_dialog_help` | Final human fallback for a stuck app sheet after Accessibility and screenshot-based mouse clicking; presents exact choices through the helper. |
+| `request_dialog_help` | Asks the person to answer an open in-app sheet or dialog; presents its exact choices through the helper. The agent never clicks dialogs itself. |
 | `finish_task` | Ends the task with success, a summary and an optional Markdown report. |
 
 The system prompt contains the tools' operating guide (`SessionTools.guide`) and these rules, and tells the executor to treat text on pages and in documents as information, not instructions.
@@ -161,6 +161,31 @@ Web steps follow a fixed rhythm: open the URL and `wait` 10 seconds in one batch
 
 When a task completes successfully, LiveCompanionService and `zoop-agent run` call `SessionCleanup.afterTask`. It sends the helper's `quitApps` request, which quits every app in the agent session except Finder. The result is added to the task summary: "Closed Safari, TextEdit." and, if an app refused because of unsaved changes, "Still open: TextEdit … nothing was discarded." Cleanup never changes the task's status. Failed and cancelled tasks skip it and keep their apps open for inspection and resuming. `zoop-agent run --keep-apps` skips it too. Because apps are quit, the executor prompt tells the model to save any document it created or changed before `finish_task`, and the planner prompt asks for a save step in document tasks.
 
-## Final dialog recovery
+## Websites through Playwright
 
-After AX and screenshot-based mouse clicks in the same app, the executor can call `request_dialog_help(bundle_id)`. DialogRecoveryState records these attempts (including a paused/failed batch in PlanRunner) and prevents premature or repeated human fallbacks. The one final human fallback can run at the automatic retry limit. The wrapper queries appDialogs, shows the real sheet context and exact choices through UserPrompting, and sends the selected identity directly to the helper. It never asks the model to translate a generic approval into Save/Allow. The returned human_choice and a fresh screenshot tell the model what actually happened; the task outcome still needs verification. See SessionBridge.md for the v8 transport and bounds.
+Websites are handled by Microsoft's Playwright MCP server (`@playwright/mcp@0.0.84`, pinned), not by Safari in the agent session. `BrowserSession` starts it with `npx` as a child process and speaks MCP (newline-delimited JSON-RPC over stdio, `MCPStdioClient`). It drives the installed Google Chrome headlessly in the person's own macOS user, with Zoop's profile in `~/Library/Application Support/Zoop/Browser Profile`, a 1280×800 viewport and `--snapshot-mode none`. Playwright acts inside the page: it fills web forms that ignored Accessibility and posted keys (Gmail compose), waits for real page loads, and screenshots pages regardless of what the agent session draws.
+
+`BrowserToolRunner` adds an allowlist of browser tools to the model (navigate, navigate_back, find, snapshot, click, type, fill_form, press_key, select_option, hover, wait_for, take_screenshot, tabs, handle_dialog) and routes `browser_*` calls to Playwright; everything else still goes to the session helper. JavaScript evaluation, file upload, network inspection and closing the browser are not offered. Results longer than 16,000 characters are cut, with a pointer to `browser_find`. The executor prompt gets a browser guide and the planner a note to plan website work as decide steps, never Safari. Without Node.js (`npx`), Zoop runs without browser tools.
+
+Sign-ins: Playwright launches Chrome with its own cookie encryption, so sites must be signed in through Zoop's own window. "Sign in to websites…" in the menu-bar menu opens a visible Chrome with the same profile at accounts.google.com; "Done signing in" closes it. Tasks cannot use the browser while that window is open, because Chrome allows one process per profile. Google sometimes refuses sign-in in automated browsers.
+
+The live preview shows the browser page (Playwright screenshots) while the browser was used in the last 20 seconds, and the agent session screen otherwise. `BrowserSessionTests.liveBrowserReadsApplesPrice` exercises the real path with `ZOOP_LIVE_BROWSER=1 swift test --filter BrowserSessionTests`.
+
+## Email through the Mail app
+
+`send_email(to, subject, body)` sends with the Mail app's configured account in the agent session through AppleScript (`MailSender`, protocol v11 `sendEmail` action). PermissionToolRunner first shows the person the recipients, subject and full text; nothing is sent without approval, and a plan step's own confirmation is skipped so there is one card. The first send asks macOS for Automation permission to control Mail. Addresses must be plain `name@domain` values.
+
+## Steps finish before the next one starts
+
+`step_done` requires `complete`. With `complete: false` the plan stops as failed instead of running later steps on missing results; a live run had moved from an unfinished Calculator step to TextEdit. An action step whose result is unconfirmed (`verified: null`, for example PID-posted typing) gets a screenshot and model check before the runner continues, unless the next step is a decide step that inspects it anyway. A `save_document` step is not confirmed separately: the runtime's save card is its single approval. A planned cmd+n right after opening TextEdit is skipped, because TextEdit already opens a blank document at launch and a live run ended up with two windows.
+
+## Dialogs, saves and permissions go to the person
+
+The agent never clicks a dialog. PermissionToolRunner routes every dialog, save and permission to the person:
+
+- **macOS permission prompts** (location, notifications, Automation, file access) are checked before every tool and after every action, as before.
+- **In-app dialogs** (Save, Replace, Continue, onboarding sheets) are checked in every app an action names or touches. A dialog that is already open is answered first and the action is not run, because the answer may change what it should be. A dialog the action opened is answered straight away, and the person's `human_choice` is returned with the action's result. Greyed-out buttons are listed in `dialog_disabled_choices`.
+- **Saving** uses only `save_document`. Before it runs, Zoop asks the person "Save the TextEdit document as ~/Documents/…?" with a confirm card, regardless of Auto mode. A declined save returns `declined`, and the model must not save another way. An action that returns `consent_pending` is repeated once after the person answers the macOS consent card.
+- `request_dialog_help(bundle_id)` asks the person about an open dialog at any time, including at the retry limit. It no longer requires Accessibility and mouse attempts first; DialogRecoveryState was removed.
+
+The helper backs this up by refusing clicks, typing, set-text and keys aimed at a dialog (see SessionBridge.md). The executor and planner prompts forbid cmd+s, Save sheets and dialog clicks. The person's choice goes directly to the helper as an opaque identity; the model never translates an approval into a button press. A fresh screenshot follows, and the task outcome still needs verification.

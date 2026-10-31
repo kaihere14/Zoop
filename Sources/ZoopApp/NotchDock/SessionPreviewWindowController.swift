@@ -16,6 +16,7 @@ enum SessionPreviewGeometry {
 final class SessionPreviewWindowController {
     private let store: CompanionStore
     private var panel: NSPanel?
+    private var closeObserver: NSObjectProtocol?
 
     init(store: CompanionStore) { self.store = store }
 
@@ -37,6 +38,9 @@ final class SessionPreviewWindowController {
             window.appearance = NSAppearance(named: .darkAqua)
             window.collectionBehavior = [.fullScreenAuxiliary]
             window.standardWindowButton(.zoomButton)?.isHidden = true
+            closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.store.isPreviewWindowOpen = false }
+            }
             panel = window
         }
         guard let panel else { return }
@@ -50,6 +54,7 @@ final class SessionPreviewWindowController {
             panel.setFrame(SessionPreviewGeometry.initialFrame(in: screen.visibleFrame), display: false)
         }
         panel.makeKeyAndOrderFront(nil)
+        store.isPreviewWindowOpen = true
     }
 
     func close() { panel?.close() }
@@ -80,7 +85,7 @@ private struct SessionPreviewWindowView: View {
                         .font(.callout).foregroundStyle(.secondary).padding()
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            Text("Updates when the agent observes its workspace · Drag the title bar to move; drag an edge to resize")
+            Text("Live view of the agent session · Drag the title bar to move; drag an edge to resize")
                 .font(.system(size: 10)).foregroundStyle(.secondary).padding(10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

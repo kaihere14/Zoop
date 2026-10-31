@@ -25,6 +25,10 @@ final class CompanionStore {
     /// tests run without it because notifications need a real app bundle.
     @ObservationIgnored var notifier: QuestionNotifying?
     @ObservationIgnored var onExpandPreview: ((UUID) -> Void)?
+    /// The detachable Agent workspace window is open.
+    var isPreviewWindowOpen = false
+    /// Someone can see the workspace preview, so frames are worth capturing quickly.
+    var isWatchingWorkspace: Bool { isPreviewWindowOpen || (isExpanded && destination == .activities) }
     /// The mode chosen on each plan card. Plans start in Ask first; Auto is chosen per plan.
     var approvalModes: [UUID: ApprovalMode] = [:]
 
@@ -295,7 +299,19 @@ final class CompanionStore {
                     }
                 }
             }
+            // Live preview: about 8 frames per second while someone is watching, and an occasional
+            // frame otherwise so the notch thumbnail stays current.
+            let feed = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    let watching = self.isWatchingWorkspace
+                    let service = self.service
+                    if let frame = await service.previewFrame(), !Task.isCancelled, self.screenshotTaskID == id { self.latestScreenshot = frame }
+                    try? await Task.sleep(for: .milliseconds(watching ? 60 : 1000))
+                }
+            }
             let outcome = await service.execute(plan, mode: approvalModes[id] ?? .ask, prompter: input) { sink.yield($0) }
+            feed.cancel()
             sink.finish()
             await consumer.value
             guard self.generation == requestGeneration, !Task.isCancelled,
@@ -364,7 +380,34 @@ final class CompanionStore {
         persist()
     }
 
-    func shutdown() { cancelWork(); persist(); audio.stop() }
+    func shutdown() {
+        cancelWork(); persist(); audio.stop()
+        if let browser { Task { await browser.shutdown() } }
+    }
+
+    /// Zoop's Playwright browser, when Node.js is available.
+    var browser: BrowserSession? { (service as? LiveCompanionService)?.browser }
+    private(set) var isBrowserSigningIn = false
+
+    /// Opens or closes the visible sign-in window that shares the task browser's profile.
+    func toggleBrowserSignIn() {
+        guard let browser else {
+            notice = "Install Node.js (brew install node) to let Zoop use a browser."
+            return
+        }
+        let opening = !isBrowserSigningIn
+        isBrowserSigningIn = opening
+        Task { @MainActor [weak self] in
+            if opening {
+                do { try await browser.openSignInWindow() } catch {
+                    self?.isBrowserSigningIn = false
+                    self?.notice = "Could not open the sign-in window: \(error)"
+                }
+            } else {
+                await browser.closeSignInWindow()
+            }
+        }
+    }
 
     private func cancelWork() {
         dismissCompletionAlerts()

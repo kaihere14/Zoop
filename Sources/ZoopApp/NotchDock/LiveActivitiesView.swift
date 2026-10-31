@@ -94,9 +94,16 @@ private struct AgentQuestionView: View {
                         ForEach(permission.choices) { choice in
                             Button(choice.title) { answer(choice.id) }
                                 .buttonStyle(GlassButtonStyle())
+                                .disabled(!choice.enabled)
+                                .opacity(choice.enabled ? 1 : 0.4)
+                                .help(choice.enabled ? "" : "Greyed out in the dialog, so it can't be pressed")
                         }
                     }.font(.system(size: 11))
                 }.fixedSize(horizontal: false, vertical: true)
+                if let note = PermissionCardText.disabledNote(permission) {
+                    Text(note).font(.system(size: 10)).foregroundStyle(Color.orange.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Button("Leave unchanged and end task") { answer("cancel_permission") }
                     .buttonStyle(GlassButtonStyle()).font(.system(size: 10))
             } else {
@@ -120,5 +127,18 @@ private struct AgentQuestionView: View {
             }
         }.padding(14).frame(height: 238)
             .background(ZoopTheme.lime.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+enum PermissionCardText {
+    /// Explains greyed-out buttons, so the person knows why the task is stuck and what choosing another button does.
+    static func disabledNote(_ prompt: PermissionPrompt) -> String? {
+        let disabled = prompt.choices.filter { !$0.enabled }.map(\.title)
+        guard !disabled.isEmpty else { return nil }
+        let names = disabled.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", ")
+        let verb = disabled.count == 1 ? "is" : "are"
+        return prompt.kind == .appDialog
+            ? "\(names) \(verb) greyed out: the dialog hasn't accepted what was entered. Choosing another button closes it so Zoop can try another way (for example saving the file directly)."
+            : "\(names) \(verb) greyed out in the dialog and can't be pressed."
     }
 }

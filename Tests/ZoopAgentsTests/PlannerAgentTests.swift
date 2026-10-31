@@ -134,7 +134,7 @@ actor PlannedTools: ToolRunning {
     @Test func repairsOnlyTheFailedStepThenResumesWithSharedModelBudget() async throws {
         let model = ScriptedModel([
             calls(("click", #"{"bundle_id":"com.apple.calculator","element":"7"}"#)),
-            calls(("step_done", #"{"summary":"Pressed 7 after finding it again"}"#)),
+            calls(("step_done", #"{"summary":"Pressed 7 after finding it again","complete":true}"#)),
             calls(("finish_task", #"{"success":true,"summary":"Verified"}"#)),
         ])
         let tools = PlannedTools(failureTool: "click")
@@ -156,7 +156,7 @@ actor PlannedTools: ToolRunning {
         ]])
         let tools = PlannedTools(failureTool: "batch", failure: ["error": "interrupted", "completed": 1])
         let model = ScriptedModel([
-            calls(("step_done", #"{"summary":"Observed expression already complete"}"#)),
+            calls(("step_done", #"{"summary":"Observed expression already complete","complete":true}"#)),
             calls(("finish_task", #"{"success":true,"summary":"Verified"}"#)),
         ])
         let result = await PlanRunner(model: model, tools: tools, prompter: FakePrompter(reply: nil)).run(plan, approved: true)
@@ -179,7 +179,7 @@ actor PlannedTools: ToolRunning {
 
     @Test func modelCallBudgetIsSharedAcrossDecisionSessions() async {
         var plan = samplePlan(); plan.steps.insert(PlanStep(summary: "Inspect", kind: .decide, goal: "Inspect controls"), at: 0)
-        let model = ScriptedModel([calls(("step_done", #"{"summary":"Inspected"}"#))])
+        let model = ScriptedModel([calls(("step_done", #"{"summary":"Inspected","complete":true}"#))])
         let tools = PlannedTools()
         let result = await PlanRunner(model: model, tools: tools, prompter: FakePrompter(reply: nil), limits: ExecutorLimits(maxSteps: 1))
             .run(plan, approved: true)
@@ -229,7 +229,7 @@ actor PlannedTools: ToolRunning {
     @Test func intermediateStepCannotFinishTheWholeTaskSuccessfully() async {
         let model = ScriptedModel([
             calls(("finish_task", #"{"success":true,"summary":"Too early"}"#)),
-            calls(("step_done", #"{"summary":"Step repaired"}"#)),
+            calls(("step_done", #"{"summary":"Step repaired","complete":true}"#)),
             calls(("finish_task", #"{"success":true,"summary":"Finally verified"}"#)),
         ])
         let tools = PlannedTools(failureTool: "click")
@@ -240,7 +240,7 @@ actor PlannedTools: ToolRunning {
 
     @Test func finalVerificationCannotReturnOnlyStepDone() async {
         let model = ScriptedModel([
-            calls(("step_done", #"{"summary":"No final answer"}"#)),
+            calls(("step_done", #"{"summary":"No final answer","complete":true}"#)),
             calls(("finish_task", #"{"success":true,"summary":"Verified"}"#)),
         ])
         let result = await PlanRunner(model: model, tools: PlannedTools(), prompter: FakePrompter(reply: nil)).run(samplePlan(), approved: true)

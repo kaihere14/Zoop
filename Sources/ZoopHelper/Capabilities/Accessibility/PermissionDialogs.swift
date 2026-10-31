@@ -15,17 +15,25 @@ enum PermissionDialogs {
         let prompt: PermissionPrompt
         let buttons: [AXElement]
         let labels: [String]
+        /// Parallel to `buttons`: false for buttons the dialog shows greyed out.
+        var enabled: [Bool] = []
         var parent: AXElement? = nil
     }
 
-    static func retainedPrompt(window: AXElement, message: String, labels: [String], previous: [Observed]) -> PermissionPrompt? {
-        previous.first { CFEqual($0.window.raw, window.raw) && $0.prompt.message == message && $0.labels == labels }?.prompt
+    /// Keeps a prompt's identity only while the dialog is unchanged, including which buttons are
+    /// enabled: a Save button that becomes available is a new situation for the person to review.
+    static func retainedPrompt(window: AXElement, message: String, labels: [String], enabled: [Bool] = [], previous: [Observed]) -> PermissionPrompt? {
+        previous.first { CFEqual($0.window.raw, window.raw) && $0.prompt.message == message && $0.labels == labels
+            && $0.prompt.choices.map(\.enabled) == (enabled.isEmpty ? labels.map { _ in true } : enabled) }?.prompt
     }
 
     static func selection(promptID: String, choiceID: String, in dialogs: [Observed]) throws -> (Observed, Int) {
         guard let dialog = dialogs.first(where: { $0.prompt.id == promptID }),
               let index = dialog.prompt.choices.firstIndex(where: { $0.id == choiceID }), dialog.buttons.indices.contains(index) else {
             throw HelperFailure(.notFound, "This permission dialog changed or closed. No button was pressed; review the current request.")
+        }
+        guard dialog.prompt.choices[index].enabled else {
+            throw HelperFailure(.unsupported, "\(dialog.labels[index]) is disabled in the dialog, so it cannot be pressed. No button was pressed.")
         }
         return (dialog, index)
     }
@@ -54,7 +62,7 @@ enum PermissionDialogs {
                 let window = candidate.element
                 var queue = [window], index = 0
                 var texts: [String] = candidate.context.isEmpty ? [] : [candidate.context]
-                var buttons: [AXElement] = [], labels: [String] = []
+                var buttons: [AXElement] = [], labels: [String] = [], enabled: [Bool] = []
                 var secure = false
                 // A static text ending in ":" (such as "Save As:") labels the next field.
                 // It is not shown on its own; the field line carries it with the value.
@@ -78,24 +86,25 @@ enum PermissionDialogs {
                         if !texts.contains(line) { texts.append(line) }
                         fieldLabel = nil
                     }
-                    if role == kAXButtonRole, element.attribute(kAXEnabledAttribute) as? Bool != false,
-                       element.actions.contains(kAXPressAction),
+                    // Disabled buttons are kept (marked) so the person sees, for example, that Save is greyed out.
+                    let isEnabled = element.attribute(kAXEnabledAttribute) as? Bool != false
+                    if role == kAXButtonRole, !isEnabled || element.actions.contains(kAXPressAction),
                        let label = element.string(kAXTitleAttribute) ?? element.string(kAXDescriptionAttribute),
                        !label.isEmpty, label != "Help", label != "?", labels.count < 8 {
-                        buttons.append(element); labels.append(label)
+                        buttons.append(element); labels.append(label); enabled.append(isEnabled)
                     }
                     let children = [kAXTextAreaRole, kAXTableRole, kAXOutlineRole, "AXBrowser", "AXWebArea"].contains(role) ? [] : element.children
                     guard queue.count + children.count <= 100 else { secure = true; break }
                     queue.append(contentsOf: children)
                 }
                 let message = texts.joined(separator: "\n\n")
-                guard index == queue.count, !secure, !message.isEmpty, !buttons.isEmpty else { continue }
-                let prompt = retainedPrompt(window: window, message: message, labels: labels, previous: previous)
+                guard index == queue.count, !secure, !message.isEmpty, enabled.contains(true) else { continue }
+                let prompt = retainedPrompt(window: window, message: message, labels: labels, enabled: enabled, previous: previous)
                     ?? PermissionPrompt(id: UUID().uuidString, ownerApp: app.bundleIdentifier!,
                     ownerName: app.localizedName ?? app.bundleIdentifier!, message: message,
-                    choices: labels.map { PermissionChoice(id: UUID().uuidString, title: $0) },
+                    choices: zip(labels, enabled).map { PermissionChoice(id: UUID().uuidString, title: $0, enabled: $1) },
                     kind: bundleID == nil ? .systemPermission : .appDialog)
-                result.append(Observed(window: window, prompt: prompt, buttons: buttons, labels: labels,
+                result.append(Observed(window: window, prompt: prompt, buttons: buttons, labels: labels, enabled: enabled,
                                        parent: bundleID == nil ? nil : window.element(kAXParentAttribute)))
             }
         }

@@ -87,6 +87,33 @@ public struct SetTextAction: Codable, Sendable, Equatable {
     }
 }
 
+/// Sends an email through the Mail app's scripting interface, with Mail's configured account.
+public struct SendEmailAction: Codable, Sendable, Equatable {
+    public var to: [String]
+    public var subject: String
+    public var body: String
+
+    public init(to: [String], subject: String, body: String) {
+        self.to = to; self.subject = subject; self.body = body
+    }
+}
+
+/// Saves an app's front document to a file through the app's AppleScript `save` command,
+/// without using its Save sheet. The helper asks macOS for Automation permission the first time.
+public struct SaveDocumentAction: Codable, Sendable, Equatable {
+    public var bundleID: String
+    /// Absolute path, or one starting with `~/`, inside the agent user's home folder.
+    public var path: String
+    /// Replace an existing file. Without it an existing file is refused.
+    public var overwrite: Bool
+
+    public init(bundleID: String, path: String, overwrite: Bool = false) {
+        self.bundleID = bundleID
+        self.path = path
+        self.overwrite = overwrite
+    }
+}
+
 public enum KeyModifier: String, Codable, Sendable, CaseIterable {
     case command, shift, option, control, function
 }
@@ -152,6 +179,10 @@ public enum InputAction: Codable, Sendable, Equatable {
     case key(KeyCombo)
     /// Absolute scroll position through the scroll bar's AXValue.
     case scrollTo(ScrollToAction)
+    /// Saves the front document through the app's scripting interface (protocol v10).
+    case saveDocument(SaveDocumentAction)
+    /// Sends an email with the Mail app (protocol v11).
+    case sendEmail(SendEmailAction)
 
     public var name: String {
         switch self {
@@ -161,6 +192,8 @@ public enum InputAction: Codable, Sendable, Equatable {
         case .setText: "setText"
         case .key: "key"
         case .scrollTo: "scrollTo"
+        case .saveDocument: "saveDocument"
+        case .sendEmail: "sendEmail"
         }
     }
 }
@@ -262,6 +295,8 @@ public enum ActionMethod: String, Codable, Sendable {
     case axScrollBarValue
     /// Key events sent only to the focused app.
     case pidKeys
+    /// An Apple event (AppleScript command) sent to the app.
+    case appleEvent
 }
 
 /// What an action did. `landed` is `nil` when the helper can't tell. The executor should

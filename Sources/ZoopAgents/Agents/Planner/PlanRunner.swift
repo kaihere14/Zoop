@@ -32,7 +32,12 @@ public struct PlanRunner: Sendable {
             if Task.isCancelled { return end(.cancelled, "Stopped by the person.") }
             guard calls < limits.maxSteps else { return end(.failed, "Stopped after \(calls) model calls without finishing.") }
             onEvent(.progress(note: step.summary, step: index + 1, percent: index * 100 / plan.steps.count))
-            if step.requiresConfirmation, mode == .auto {
+            // save_document gets exactly one card: the runtime asks before every save, so the
+            // plan step's own confirmation would be a second prompt for the same thing.
+            let confirmsItself = step.tool == .saveDocument || step.tool == .sendEmail
+            if confirmsItself {
+                // Approval comes from the save card shown when the tool runs.
+            } else if step.requiresConfirmation, mode == .auto {
                 onEvent(.thought("Step \(index + 1) is pre-approved in Auto mode: \(step.summary)"))
             } else if step.requiresConfirmation {
                 let question = "Approve step \(index + 1): \(step.summary)? \(step.goal) Reply yes to continue."
@@ -43,13 +48,22 @@ public struct PlanRunner: Sendable {
                 guard Self.isApproval(answer) else { return end(.cancelled, "Step \(index + 1) was not approved.") }
             }
             var result: ToolResult?
+            if Self.createsSecondDocument(step, after: index > 0 ? plan.steps[index - 1] : nil) {
+                onEvent(.thought("Skipped step \(index + 1): TextEdit already opened a blank document, so cmd+n would create a second one."))
+                completed.append("\(index + 1). \(step.summary): skipped; use the blank document TextEdit opened at launch.")
+                continue
+            }
             if step.kind == .action, let tool = step.tool {
                 onEvent(.toolStarted(name: tool.rawValue, arguments: step.arguments.jsonText))
                 let value = await tools.call(tool.rawValue, argumentsJSON: step.arguments.jsonText)
                 onEvent(.toolFinished(name: tool.rawValue, result: value))
                 if Task.isCancelled { return end(.cancelled, "Stopped by the person.") }
                 result = value
-                if !value.isError && value.content["verified"] != false && !value.requiresObservation {
+                // An action whose effect could not be confirmed (typed keys, an unverified press) is
+                // checked before moving on, unless the next step is a decision that inspects it anyway.
+                let nextInspects = plan.steps.indices.contains(index + 1) && plan.steps[index + 1].kind == .decide
+                if !value.isError && value.content["verified"] != false && !value.requiresObservation
+                    && (nextInspects || !Self.unconfirmed(value)) {
                     completed.append("\(index + 1). \(step.summary): \(value.text)")
                     continue
                 }
@@ -71,6 +85,7 @@ public struct PlanRunner: Sendable {
                 Step-specific confirmation: \(step.requiresConfirmation ? (mode == .auto ? "pre-approved by Auto mode" : "approved by the person before this step") : "not requested")
                 Planned call: \(step.tool?.rawValue ?? "decide") \(step.arguments.jsonText)
                 Current action result (an unconfirmed click may already have worked): \(result?.text ?? "No failure; this step needs judgment.")
+                \(result.map { !$0.isError && $0.content["verified"] != false && !$0.requiresObservation } == true ? "The action ran but its effect is unconfirmed. Check it (screenshot, list_elements or read_page). If it worked, call step_done with complete true; otherwise repair it." : "")
                 \(final ? "Verify the final outcome and call finish_task with the result/report." : "Complete only this step, then call step_done. Later steps belong to the Swift runner.")
                 """)]
             onEvent(.toolStarted(name: "screenshot", arguments: "{}"))
@@ -95,16 +110,12 @@ public struct PlanRunner: Sendable {
             let baseCalls = calls
             let baseUsage = usage
             let session = AgentSession(model: model, tools: tools, prompter: prompter, limits: remaining)
-            var clickRecovery = DialogRecoveryState()
-            if let result, let tool = step.tool {
-                clickRecovery.record(name: tool.rawValue, arguments: step.arguments, result: result)
-            }
             let assisted = await session.run(ExecutorTask(request: plan.request, plan: plan.steps.map(\.summary)),
                 history: history, system: assistSystem, allowsStepDone: !final, allowsTaskCompletion: final,
                 failedAttempts: result.flatMap { value in
                     value.isError || value.content["verified"] == false
                         ? ["\(step.tool?.rawValue ?? "action") \(step.arguments.jsonText.prefix(100)): \(value.text.prefix(160))"] : nil
-                } ?? [], clickRecovery: clickRecovery) { event in
+                } ?? []) { event in
                     switch event {
                     case .started, .finished: break
                     case .step(let number): onEvent(.step(baseCalls + number))
@@ -122,6 +133,23 @@ public struct PlanRunner: Sendable {
             completed.append("\(index + 1). \(step.summary): \(assisted.outcome.summary)")
         }
         return end(.failed, "The plan ended without final verification.")
+    }
+
+    /// TextEdit opens a blank document when it launches; a planned cmd+n right after opening it
+    /// produced a second, empty "Untitled 2" window in a live run.
+    static func createsSecondDocument(_ step: PlanStep, after previous: PlanStep?) -> Bool {
+        guard step.kind == .action, step.tool == .pressKey,
+              step.arguments["keys"]?.stringValue?.lowercased().replacingOccurrences(of: " ", with: "") == "cmd+n",
+              let previous, previous.tool == .openApp else { return false }
+        return previous.arguments["bundle_id"]?.stringValue == "com.apple.TextEdit"
+    }
+
+    /// True when the helper could not tell whether the action took effect (`verified: null`),
+    /// for the action itself or any action in a batch.
+    static func unconfirmed(_ result: ToolResult) -> Bool {
+        if result.content["verified"] == .null { return true }
+        if case .array(let entries)? = result.content["results"] { return entries.contains { $0["verified"] == .null } }
+        return false
     }
 
     public static func isApproval(_ answer: String) -> Bool {

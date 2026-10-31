@@ -87,8 +87,16 @@ The expand icon beside the task title in Agent workspace opens one separate floa
 
 The window observes the same task-scoped screenshots as the notch, so updates arrive when the agent observes its workspace. It does not add continuous capture or remote input. The screenshot scales to fit without distortion, and a removed/reset task cannot display another task's screenshot. Closing the notch does not close the floating preview.
 
-## Help with a stuck app dialog
+## Live workspace preview
 
-For ordinary in-app sheets (Save/Cancel, notification onboarding, Continue), the executor first tries Accessibility and then a screenshot-based mouse click. If both fail, `request_dialog_help` opens the same human-choice card and notification used for system permissions, labelled with the app's name and its exact observed choices. Save cards include current field values such as the filename. Longer cards scroll so all offered choices remain reachable. The runtime does not let the model use this as its first click strategy.
+While a task runs, Zoop captures the agent session over its own helper connection, separate from the agent's requests. With the Agent workspace window open, or Live Activities showing in the notch, it captures about 8 frames per second at 1280 pixels wide (each capture takes about 60 ms). Otherwise it captures one frame per second for the thumbnail. While the agent is using the browser, the preview shows the Chrome page instead. Capturing stops when the task ends.
+
+"Sign in to websites…" in the menu-bar menu opens a visible Chrome window that uses Zoop's browser profile, so you can sign in to Gmail and other sites once. Choose "Done signing in" to close it before running tasks.
+
+## Dialogs and saves
+
+The agent never clicks in-app sheets (Save/Cancel, Replace, notification onboarding, Continue). As soon as one is open in an app the task is using, Zoop shows the same human-choice card and notification used for system permissions, labelled with the app's name and its exact observed choices. Save cards include current field values such as the filename. Longer cards scroll so all offered choices remain reachable.
+
+Saving a file shows a confirm card first, such as "Save the TextEdit document as ~/Documents/MacBook Quote.rtf?". The file is written only after **Allow**. The first save into an app also brings macOS's Automation request as a permission card. Greyed-out buttons, such as a disabled Save, appear dimmed and cannot be chosen; an orange note explains that the dialog has not accepted what was entered and that choosing another button closes it so Zoop can try another way. Notifications offer only buttons that can be pressed.
 
 After a user chooses a button, the helper validates the current dialog and performs the exact button once. A screenshot checkpoint follows before later actions or task completion. Cancel and Don't Save must be respected, and closing a Save sheet must not be reported as proof that the intended file exists. Missing controls, stale dialogs, unreadable trees and unconfirmed presses fail without an automatic second press. Native execution and CLI execution share this path; the CLI asks for an exact label or choice number rather than posting a notification.

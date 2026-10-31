@@ -32,6 +32,17 @@ enum ExecutorPrompt {
     - Zoop quits every app in the agent session after a successful task. Before finish_task \
     with success true, save any document you created or changed (unless the person asked you \
     not to); an app with unsaved changes stays open.
+    - Save files only with save_document (bundle_id and the full path, for example \
+    ~/Documents/Quote.rtf). Never press cmd+s or use a Save sheet. Zoop asks the person to \
+    approve each save, and macOS may ask them for permission the first time; both appear as \
+    cards in their session. If they decline, do not save another way.
+    - Send email only with send_email (Mail app). Never compose email in a web page or in \
+    Mail's window. Zoop shows the person the exact message and sends only after they approve; \
+    that approval replaces ask_user for this send.
+    - Dialogs and sheets (Save, Replace, Continue, onboarding, permission requests) are answered \
+    by the person, never by you. Do not click, type or press keys in them. Zoop shows any dialog \
+    that opens to the person automatically and returns their `human_choice` with the action's \
+    result. If a dialog is still open, call request_dialog_help with its app's bundle_id.
     - When the task is done, call finish_task with success true, a short summary of what you did \
     and found, and report_markdown when the task asked for research, a comparison or other \
     written results. If you cannot finish, call finish_task with success false, explain what \
@@ -41,16 +52,12 @@ enum ExecutorPrompt {
     open_app to focus the app, screenshot again, locate the control visually, and click with \
     strategy mouse, bundle_id, x and y. Verify its effect; if ignored, try keyboard navigation. \
     Never send an AX press and mouse retry together or use coordinates from before focus changed. \
-    If both Accessibility and visual mouse clicking fail on an in-app dialog (for example Save, \
-    Continue, or a notification onboarding sheet), call request_dialog_help with its bundle_id. \
-    This shows the real dialog text/fields and exact buttons to the person in the notch/notification. \
-    It is the final fallback, not an automatic permission grant. Wait for the person's choice, then \
-    inspect the new screenshot. A dismissed Save sheet is not proof that the file was saved correctly. \
-    Respect the person's chosen button: Cancel or Don't Save is not approval to save, and must \
-    not be immediately undone by retrying the same operation. \
+    These recovery steps are for ordinary app controls only, never for dialogs. After the person \
+    answers a dialog, inspect the new screenshot. Respect their chosen button: Cancel or Don't \
+    Save is not approval, and must not be undone by retrying the same operation. \
     Never repeat the failed action unchanged. You get \(ExecutorLimits().maxFailedAttempts) failed \
-    automatic attempts; after that, use the final human dialog fallback if eligible, otherwise \
-    stop and report with finish_task as above.
+    automatic attempts; after that, ask the person with request_dialog_help if a dialog is open, \
+    otherwise stop and report with finish_task as above.
     - Read web pages with read_page, not screenshots: a loaded page often looks blank in a \
     screenshot here. If a website has no text or lacks the information, follow the web page steps \
     above (wait 10 seconds, then up to 3 reloads), then get it from another source. A site named in the task is \
@@ -92,15 +99,16 @@ enum ExecutorPrompt {
     }
 
     static let stepDoneTool = ModelTool(name: "step_done",
-        description: "Return control to the Swift plan runner after completing only the current step. Do not execute later plan steps. Describe the observed result.",
-        inputSchema: ["type": "object", "additionalProperties": false, "required": ["summary"],
-                      "properties": ["summary": ["type": "string"]]])
+        description: "Return control to the Swift plan runner after the current step. Do not execute later plan steps. Set complete true only when you observed the step's goal achieved (for example the calculator display shows the result, the document text reads back exactly). If the step could not be finished, set complete false: the task stops there instead of moving on to steps that depend on it.",
+        inputSchema: ["type": "object", "additionalProperties": false, "required": ["summary", "complete"],
+                      "properties": ["summary": ["type": "string", "description": "What you observed, including the values produced."],
+                                     "complete": ["type": "boolean", "description": "True only if the step's goal is achieved and verified."]]])
 
     static let controlTools: [ModelTool] = [
         ModelTool(name: Control.requestDialogHelp.rawValue,
-            description: "Final fallback after Accessibility and screenshot-based mouse clicks failed on an in-app sheet/dialog. Show the app's actual dialog and exact choices to the person, wait for their choice, and ask the helper to press that exact button once. Does not fill missing filenames or bypass macOS input restrictions. Inspect the result before continuing.",
+            description: "Ask the person to answer an open in-app sheet or dialog. Use it as soon as a dialog is open; never click it yourself. Zoop shows the app's actual dialog text and exact buttons to the person, waits for their choice, and the helper presses that exact button once. Does not fill in text fields. Inspect the result before continuing.",
             inputSchema: ["type": "object", "additionalProperties": false, "required": ["bundle_id"],
-                          "properties": ["bundle_id": ["type": "string", "description": "The app whose dialog is stuck, such as com.apple.Maps or com.apple.TextEdit."]]]),
+                          "properties": ["bundle_id": ["type": "string", "description": "The app showing the dialog, such as com.apple.Maps or com.apple.TextEdit."]]]),
         ModelTool(
             name: Control.reportProgress.rawValue,
             description: "Show the person a short progress note in the notch. Call it when you start each plan step and when something notable happens, in the same response as your next action (never alone). Returns {\"ok\": true}.",

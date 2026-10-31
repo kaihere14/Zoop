@@ -101,7 +101,28 @@ actor SessionActions {
         case .type(let text): return try type(text)
         case .key(let combo): return try key(combo)
         case .scrollTo(let scroll): return try scrollTo(scroll)
+        case .saveDocument(let save):
+            // A Save sheet left open would compete with the scripted save; the model must close it first.
+            if let sheet = PermissionDialogs.scan(previous: [], bundleID: save.bundleID).first {
+                throw HelperFailure(.unsupported, "\(sheet.prompt.ownerName) still has a dialog open (\(sheet.labels.joined(separator: ", "))). Close it with its Cancel button first, then save again.")
+            }
+            return try await DocumentSaver.save(save)
+        case .sendEmail(let email):
+            return try await MailSender.send(email)
         }
+    }
+
+    /// The person answers dialogs and sheets through Zoop's card; the agent never sends input to
+    /// them. Refusing here, before any event is posted, covers clicks, typing and keys alike.
+    private func refuseDialogInput(_ element: AXElement) throws {
+        // Save-panel controls sit deep inside nested groups, so look further up than click targeting does.
+        guard let dialog = element.ancestors(limit: 25).first(where: {
+            PermissionDialogs.isDialog(role: $0.string(kAXRoleAttribute) ?? "", subrole: $0.string(kAXSubroleAttribute),
+                                       modal: $0.attribute(kAXModalAttribute) as? Bool == true)
+        }) else { return }
+        let app = element.info.app ?? "the app"
+        let title = dialog.string(kAXTitleAttribute).flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+        throw HelperFailure(.unsupported, "That control is in a dialog\(title). The person answers dialogs: call request_dialog_help with bundle_id \(app). Nothing was sent.")
     }
 
     private func requirePostEvent() throws {
@@ -138,6 +159,7 @@ actor SessionActions {
         try AXElement.requirePermission()
         if click.strategy == .mouse { return try mouseClick(click) }
         let hit = try AXElement.at(click.point)
+        try refuseDialogInput(hit)
         if let bundleID = click.bundleID, hit.info.app != bundleID {
             throw HelperFailure(.notFound, "the target point is not in \(bundleID). Call open_app, then take a new screenshot before locating it again.")
         }
@@ -188,7 +210,9 @@ actor SessionActions {
         }
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         let window = try MouseClickTarget(point: click.point, expectedPID: pid, windows: windows)
-        let target = (try? AXElement.at(click.point))?.info
+        let hit = try? AXElement.at(click.point)
+        if let hit { try refuseDialogInput(hit) }
+        let target = hit?.info
         let events = try window.events(for: click)
         // No global event taps, pointer warps or HID injection.
         for event in events { event.postToPid(pid); usleep(20_000) }
@@ -200,6 +224,7 @@ actor SessionActions {
     private func setText(_ action: SetTextAction) throws -> ActionReport {
         try AXElement.requirePermission()
         let element = try action.point.map { try AXElement.at($0) } ?? AXElement.focused()
+        try refuseDialogInput(element)
         guard element.isSettable(kAXValueAttribute) else { throw HelperFailure(.unsupported, "target's AXValue is not writable") }
         let error = element.set(kAXValueAttribute, action.text as CFString)
         let value = element.string(kAXValueAttribute)
@@ -226,6 +251,7 @@ actor SessionActions {
         try AXElement.requirePermission()
         try requirePostEvent()
         let element = try AXElement.focused()
+        try refuseDialogInput(element)
         let pid = element.pid
         guard pid > 0 else { throw HelperFailure(.notFound, "focused element has no app pid") }
         let before = element.string(kAXValueAttribute)
@@ -265,6 +291,7 @@ actor SessionActions {
         // Shortcuts such as Cmd+L need only the app, not a focused element. When nothing
         // reports focus, target the session's focused/frontmost app itself.
         let focused = try? AXElement.focused()
+        if let focused { try refuseDialogInput(focused) }
         guard let element = focused ?? AXElement.focusedApp() else {
             throw HelperFailure(.notFound, "no focused element or frontmost app in the agent session")
         }

@@ -19,7 +19,11 @@ public enum ZoopProtocol {
     /// v6: explicit PID mouse recovery; v7: observed system dialogs and human choices.
     /// v8: explicit in-app dialog handoff, using the same human-choice response path.
     /// v9: quitApps, so a finished task leaves a clean agent session.
-    public static let version = 9
+    /// v10: disabled dialog choices are reported (not pressable), input aimed at a dialog is
+    ///     refused (the person answers dialogs), and the saveDocument input action saves through
+    ///     the app's scripting interface.
+    /// v11: the sendEmail input action sends through the Mail app.
+    public static let version = 11
 }
 
 // MARK: - Payload types
@@ -207,6 +211,9 @@ public struct HelperFailure: Error, Codable, Sendable, Equatable, CustomStringCo
         case notFound
         /// The target can't do what was asked (for example set-text on a read-only element).
         case unsupported
+        /// macOS is showing a consent dialog for this action (for example Automation). The action
+        /// did not run; it can run once the person answers that dialog.
+        case consentPending
         case internalError
     }
 

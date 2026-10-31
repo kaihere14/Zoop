@@ -21,6 +21,11 @@ What works, and how:
 - Keys and shortcuts: `press_key` (cmd+l, cmd+a, return, tab, escape, arrows, pageup, pagedown). Keys go to the focused element, or to the frontmost app when nothing reports focus, so app shortcuts work.
 - Scrolling: `scroll_to` sets a scroll area's position from 0 (top) to 1 (bottom) and is verified. For page-sized steps use `press_key` pageup/pagedown on a focused document.
 - Apps: `open_app` launches or brings forward an app by bundle id.
+- New documents: TextEdit (and most document apps) opens a blank "Untitled" document when it starts. After open_app, check its windows with list_elements and write into that document. Press cmd+n only when no document window is open; never create a second document.
+- Calculator: clicking its buttons in the background session is unreliable. Clear it with press_key escape, then type the whole expression in one `type_text`, such as 149900*3=, and read the result with `list_elements` (all true) or a screenshot before using it. Clear again before the next calculation.
+- Saving: `save_document` saves an app's front document to a full path, for example ~/Documents/Quote.rtf. Never use cmd+s or a Save sheet. The person approves each save.
+- Email: `send_email` sends with the Mail app's account (to, subject, body). Never compose email in a web page or in Mail's window. The person approves each send.
+- Dialogs and sheets are answered by the person, not by these tools. Clicks, typing and keys aimed at a dialog are refused.
 - Waiting: `wait` pauses for a few seconds without touching anything, for pages and apps that are still loading. It can go inside a batch, for example press_key cmd+r then wait 5.
 
 Web pages: the agent session is not on screen, so Safari often skips drawing animated or fading content. A screenshot can show a blank or half-drawn page that has in fact loaded. Do not judge a page by its screenshot. Use `read_page`, which reads the page's text through Accessibility whether or not it was drawn, and click links by name (`bundle_id` + `element`). A page that has not loaded is not a failed action: do not click on it. Instead:
@@ -36,6 +41,7 @@ When a tool fails, read `error` and `next`:
 - `not_found`: the target is gone or the coordinates are stale. Observe again.
 - `unsupported`: this target cannot do that. Choose another element or another method (for example the keyboard instead of a click).
 - `interrupted` or `timed_out` on an action: it may or may not have happened. Take a screenshot before deciding to repeat it. Never repeat an action blindly.
+- `consent_pending`: macOS is asking the person for permission; nothing ran yet. Zoop shows them the request. Call the tool again once.
 - `permission_denied`, `helper_unavailable`, `setup_error`: stop and report the message to the person; they must fix the setup.
 
 ## Results
@@ -57,6 +63,8 @@ Every call returns one JSON object. Successful calls have `"ok": true`, the tool
 | `set_text` | no | Replace a text element's entire value through Accessibility. |
 | `press_key` | no | Press a key or keyboard shortcut in the focused app. |
 | `scroll_to` | no | Scroll the scroll area under a point to an absolute position. |
+| `save_document` | no | Save an app's front document to a file through the app's scripting interface. |
+| `send_email` | no | Send an email with the Mail app's configured account. |
 | `wait` | yes | Pause for a few seconds without doing anything in the agent session. |
 | `batch` | no | Run several actions in order with one call. |
 
@@ -191,7 +199,7 @@ Failures:
 
 ### `set_text`
 
-Replace a text element's entire value through Accessibility. Exact and verified, with no autocorrection. Targets the element at (x, y), or the focused element when x and y are omitted. Replaces the whole value; it does not insert at the cursor. Some apps update their display but not their internal state from a direct write; if a form does not react, type_text into it instead.
+Replace a text element's entire value through Accessibility. Exact and verified, with no autocorrection. Targets the element at (x, y), or the focused element when x and y are omitted. Replaces the whole value; it does not insert at the cursor. Some apps update their display but not their internal state from a direct write; if a form does not react, type_text into it instead. Not available in dialogs or sheets.
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -243,6 +251,48 @@ Failures:
 - `unsupported`: nothing under the point has a scroll bar on that axis, or it cannot be set. Point at the scrolling content itself, or use press_key pagedown.
 - `not_found`: nothing is at that point any more. Take a new screenshot or call list_elements.
 - `permission_denied`: Accessibility is not granted to ZoopHelper in the agent session. Stop and tell the person.
+- `interrupted` or `timed_out`: the action may have happened. Take a screenshot before repeating it.
+
+### `save_document`
+
+Save an app's front document to a file through the app's scripting interface. The only way to save a file: never use cmd+s or a Save sheet. Zoop first asks the person to approve the save with a card in their session; the first time, macOS also asks them to allow ZoopHelper to control the app. Works with scriptable document apps such as TextEdit, Pages and Preview. The path must be inside the agent user's home folder; its extension should match the document (.rtf for TextEdit rich text, .txt for plain text). An existing file is refused unless `overwrite` is true, which the approval card states. If a sheet is open in the app, call request_dialog_help first.
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `bundle_id` | string | yes | Bundle identifier of the app that has the document open. |
+| `path` | string | yes | Full file path, absolute or starting with ~/, for example ~/Documents/Quote.rtf. |
+| `overwrite` | boolean | no | Replace an existing file. Only after the person agreed. Default `false`. |
+
+Returns: `verified` (true when the file was written on disk) and `detail` with the saved path.
+
+Failures:
+
+- `declined`: the person did not approve this save. Do not save another way.
+- `unsupported`: a dialog is still open in the app, the file exists, or the app refused the save. Read the message.
+- `not_found`: the app is not running or the folder does not exist.
+- `consent_pending`: macOS is asking the person for Automation permission. Call again once after they answer.
+- `permission_denied`: Automation permission was denied. Stop and tell the person.
+- `interrupted` or `timed_out`: the action may have happened. Take a screenshot before repeating it.
+
+### `send_email`
+
+Send an email with the Mail app's configured account. The only way to send email: never type into a web mail page or Mail's compose window. Zoop shows the person the recipients, subject and full text and sends only after they approve; the first time, macOS also asks them to let ZoopHelper control Mail. Write the complete message in `body` as plain text.
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `to` | string | yes | Recipient email addresses, separated by commas. |
+| `subject` | string | yes | Subject line. |
+| `body` | string | yes | The complete message as plain text. |
+
+Returns: `verified` (true when Mail reported the message sent) and `detail`.
+
+Failures:
+
+- `declined`: the person did not approve this email. Do not send it another way.
+- `invalid_arguments`: an address is not a plain email address.
+- `unsupported`: Mail could not send, for example because no account is set up.
+- `consent_pending`: macOS is asking the person for Automation permission. Call again once after they answer.
+- `permission_denied`: Automation permission was denied. Stop and tell the person.
 - `interrupted` or `timed_out`: the action may have happened. Take a screenshot before repeating it.
 
 ### `wait`

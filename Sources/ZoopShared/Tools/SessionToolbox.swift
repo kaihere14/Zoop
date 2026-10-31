@@ -160,6 +160,14 @@ public struct SessionToolbox: Sendable {
             let point = args.has("x") ? Point(x: args.number("x")!, y: args.number("y")!) : nil
             return try await act(tool, .setText(SetTextAction(text: args.string("text")!, point: point)))
 
+        case .sendEmail:
+            let to = args.string("to")!.split(whereSeparator: { $0 == "," || $0 == ";" }).map { $0.trimmingCharacters(in: .whitespaces) }
+            return try await act(tool, .sendEmail(SendEmailAction(to: to, subject: args.string("subject")!, body: args.string("body")!)))
+
+        case .saveDocument:
+            return try await act(tool, .saveDocument(SaveDocumentAction(bundleID: args.string("bundle_id")!, path: args.string("path")!,
+                                                                        overwrite: args.bool("overwrite", default: false))))
+
         case .pressKey:
             let keys = args.string("keys")!
             guard let combo = KeyCombo.parse(keys) else {
@@ -408,6 +416,8 @@ public struct SessionToolbox: Sendable {
         case "interrupted", "timed_out":
             retry = readOnly ? "safe" : "after_check"
             next = readOnly ? "Safe to call again." : "The action may have happened. Take a screenshot before deciding to repeat it."
+        case "consent_pending":
+            retry = "after_check"; next = "Nothing was done yet. Zoop shows the macOS permission request to the person; call the tool again after they answer."
         case "permission_denied", "setup_error", "helper_unavailable":
             retry = "no"; next = "Stop and tell the person: \(message)"
         default:
@@ -432,6 +442,7 @@ public struct SessionToolbox: Sendable {
             case .permissionDenied: return ("permission_denied", failure.message)
             case .notFound: return ("not_found", failure.message)
             case .unsupported: return ("unsupported", failure.message)
+            case .consentPending: return ("consent_pending", failure.message)
             case .badRequest: return ("invalid_arguments", failure.message)
             case .unauthorized: return ("setup_error", error.userMessage)
             case .handshakeRequired, .internalError: return ("internal_error", failure.message)

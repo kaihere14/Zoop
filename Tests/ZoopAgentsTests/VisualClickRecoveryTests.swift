@@ -83,7 +83,7 @@ actor VisualRecoveryTools: ToolRunning {
     @Test func planRunnerChecksUnconfirmedClickBeforeTheNextDirectAction() async {
         let tools = VisualRecoveryTools()
         let model = ScriptedModel([
-            calls(("step_done", #"{"summary":"Click already worked; no retry"}"#)),
+            calls(("step_done", #"{"summary":"Click already worked; no retry","complete":true}"#)),
             calls(("finish_task", #"{"success":true,"summary":"Done"}"#)),
         ])
         let plan = TaskPlan(request: "Enter text", title: "Text", steps: [

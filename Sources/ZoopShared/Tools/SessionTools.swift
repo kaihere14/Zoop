@@ -13,6 +13,8 @@ public enum SessionToolName: String, Sendable, CaseIterable, Codable {
     case setText = "set_text"
     case pressKey = "press_key"
     case scrollTo = "scroll_to"
+    case saveDocument = "save_document"
+    case sendEmail = "send_email"
     case wait
     case batch
 }
@@ -70,6 +72,19 @@ public enum SessionTools {
     - Scrolling: `scroll_to` sets a scroll area's position from 0 (top) to 1 (bottom) and is \
     verified. For page-sized steps use `press_key` pageup/pagedown on a focused document.
     - Apps: `open_app` launches or brings forward an app by bundle id.
+    - New documents: TextEdit (and most document apps) opens a blank "Untitled" document when it \
+    starts. After open_app, check its windows with list_elements and write into that document. \
+    Press cmd+n only when no document window is open; never create a second document.
+    - Calculator: clicking its buttons in the background session is unreliable. Clear it with \
+    press_key escape, then type the whole expression in one `type_text`, such as 149900*3=, and \
+    read the result with `list_elements` (all true) or a screenshot before using it. Clear again \
+    before the next calculation.
+    - Saving: `save_document` saves an app's front document to a full path, for example \
+    ~/Documents/Quote.rtf. Never use cmd+s or a Save sheet. The person approves each save.
+    - Email: `send_email` sends with the Mail app's account (to, subject, body). Never compose \
+    email in a web page or in Mail's window. The person approves each send.
+    - Dialogs and sheets are answered by the person, not by these tools. Clicks, typing and keys \
+    aimed at a dialog are refused.
     - Waiting: `wait` pauses for a few seconds without touching anything, for pages and apps \
     that are still loading. It can go inside a batch, for example press_key cmd+r then wait 5.
 
@@ -98,6 +113,8 @@ public enum SessionTools {
     example the keyboard instead of a click).
     - `interrupted` or `timed_out` on an action: it may or may not have happened. Take a screenshot \
     before deciding to repeat it. Never repeat an action blindly.
+    - `consent_pending`: macOS is asking the person for permission; nothing ran yet. Zoop shows \
+    them the request. Call the tool again once.
     - `permission_denied`, `helper_unavailable`, `setup_error`: stop and report the message to the \
     person; they must fix the setup.
     """
@@ -208,7 +225,7 @@ public enum SessionTools {
             return ToolDefinition(
                 name: name,
                 summary: "Replace a text element's entire value through Accessibility.",
-                usage: "Exact and verified, with no autocorrection. Targets the element at (x, y), or the focused element when x and y are omitted. Replaces the whole value; it does not insert at the cursor. Some apps update their display but not their internal state from a direct write; if a form does not react, type_text into it instead.",
+                usage: "Exact and verified, with no autocorrection. Targets the element at (x, y), or the focused element when x and y are omitted. Replaces the whole value; it does not insert at the cursor. Some apps update their display but not their internal state from a direct write; if a form does not react, type_text into it instead. Not available in dialogs or sheets.",
                 parameters: [
                     ToolParameter("text", .string, "The complete new value."),
                     ToolParameter("x", .number, "Horizontal position of the element, in points. Give x and y together, or neither.", required: false, minimum: 0),
@@ -241,6 +258,40 @@ public enum SessionTools {
                 returns: "`verified` (true when the scroll bar reads back the requested position), the scroll bar `target`, and `detail` with the positions before and after.",
                 failures: ["`unsupported`: nothing under the point has a scroll bar on that axis, or it cannot be set. Point at the scrolling content itself, or use press_key pagedown.",
                            staleTarget, needsAccessibility, mayHaveRun],
+                isReadOnly: false)
+        case .saveDocument:
+            return ToolDefinition(
+                name: name,
+                summary: "Save an app's front document to a file through the app's scripting interface.",
+                usage: "The only way to save a file: never use cmd+s or a Save sheet. Zoop first asks the person to approve the save with a card in their session; the first time, macOS also asks them to allow ZoopHelper to control the app. Works with scriptable document apps such as TextEdit, Pages and Preview. The path must be inside the agent user's home folder; its extension should match the document (.rtf for TextEdit rich text, .txt for plain text). An existing file is refused unless `overwrite` is true, which the approval card states. If a sheet is open in the app, call request_dialog_help first.",
+                parameters: [
+                    ToolParameter("bundle_id", .string, "Bundle identifier of the app that has the document open."),
+                    ToolParameter("path", .string, "Full file path, absolute or starting with ~/, for example ~/Documents/Quote.rtf."),
+                    ToolParameter("overwrite", .boolean, "Replace an existing file. Only after the person agreed.", required: false, defaultValue: false),
+                ],
+                returns: "`verified` (true when the file was written on disk) and `detail` with the saved path.",
+                failures: ["`declined`: the person did not approve this save. Do not save another way.",
+                           "`unsupported`: a dialog is still open in the app, the file exists, or the app refused the save. Read the message.",
+                           "`not_found`: the app is not running or the folder does not exist.",
+                           "`consent_pending`: macOS is asking the person for Automation permission. Call again once after they answer.",
+                           "`permission_denied`: Automation permission was denied. Stop and tell the person.", mayHaveRun],
+                isReadOnly: false)
+        case .sendEmail:
+            return ToolDefinition(
+                name: name,
+                summary: "Send an email with the Mail app's configured account.",
+                usage: "The only way to send email: never type into a web mail page or Mail's compose window. Zoop shows the person the recipients, subject and full text and sends only after they approve; the first time, macOS also asks them to let ZoopHelper control Mail. Write the complete message in `body` as plain text.",
+                parameters: [
+                    ToolParameter("to", .string, "Recipient email addresses, separated by commas."),
+                    ToolParameter("subject", .string, "Subject line."),
+                    ToolParameter("body", .string, "The complete message as plain text."),
+                ],
+                returns: "`verified` (true when Mail reported the message sent) and `detail`.",
+                failures: ["`declined`: the person did not approve this email. Do not send it another way.",
+                           "`invalid_arguments`: an address is not a plain email address.",
+                           "`unsupported`: Mail could not send, for example because no account is set up.",
+                           "`consent_pending`: macOS is asking the person for Automation permission. Call again once after they answer.",
+                           "`permission_denied`: Automation permission was denied. Stop and tell the person.", mayHaveRun],
                 isReadOnly: false)
         case .wait:
             return ToolDefinition(

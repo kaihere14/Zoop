@@ -1,4 +1,5 @@
 import AppKit
+import ZoopShared
 
 @main
 struct ZoopApplication {
@@ -65,6 +66,7 @@ final class ZoopAppDelegate: NSObject, NSApplicationDelegate {
             let level = item("Float above full-screen apps", #selector(toggleLevel), key: "")
             level.state = aboveFullscreen ? .on : .off
             menu.addItem(level)
+            menu.addItem(item(store.isBrowserSigningIn ? "Done signing in (close browser)" : "Sign in to websites…", #selector(toggleBrowserSignIn), key: ""))
             menu.addItem(item("Clear conversation", #selector(resetDemo), key: ""))
             menu.addItem(.separator())
             menu.addItem(item("About Zoop", #selector(showAbout), key: ""))
@@ -103,6 +105,7 @@ final class ZoopAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleSound() { store.toggleSound() }
     @objc private func toggleLevel() { aboveFullscreen.toggle(); notch?.setAboveFullscreen(aboveFullscreen) }
     @objc private func resetDemo() { store.reset(); store.openChat() }
+    @objc private func toggleBrowserSignIn() { store.toggleBrowserSignIn() }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func showAbout() {

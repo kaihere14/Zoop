@@ -31,5 +31,17 @@ public struct PermissionPrompt: Codable, Sendable, Equatable, Identifiable {
 public struct PermissionChoice: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let title: String
-    public init(id: String, title: String) { self.id = id; self.title = title }
+    /// False when the dialog shows this button greyed out. It is listed so the person can see why
+    /// the task is stuck (for example a disabled Save), but it cannot be chosen.
+    public let enabled: Bool
+
+    public init(id: String, title: String, enabled: Bool = true) { self.id = id; self.title = title; self.enabled = enabled }
+
+    private enum CodingKeys: String, CodingKey { case id, title, enabled }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    }
 }

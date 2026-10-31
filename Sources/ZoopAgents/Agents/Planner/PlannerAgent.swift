@@ -7,9 +7,11 @@ public struct PlannerAgent: Sendable {
     let model: any ChatModel
     let tools: any ToolRunning
     let maxCalls: Int
+    /// The executor will have the browser_* tools, so web steps are planned for them.
+    let browserAvailable: Bool
 
-    public init(model: any ChatModel, tools: any ToolRunning, maxCalls: Int = 8) {
-        self.model = model; self.tools = tools; self.maxCalls = maxCalls
+    public init(model: any ChatModel, tools: any ToolRunning, maxCalls: Int = 8, browserAvailable: Bool = false) {
+        self.model = model; self.tools = tools; self.maxCalls = maxCalls; self.browserAvailable = browserAvailable
     }
 
     public func plan(_ request: String, onEvent: @Sendable (AgentEvent) -> Void = { _ in }) async throws -> PlannedTask {
@@ -31,12 +33,14 @@ public struct PlannerAgent: Sendable {
         let readOnly = SessionTools.catalog.filter { $0.isReadOnly && $0.name != .wait }
         let allowed = Set(readOnly.map { $0.name.rawValue })
         var observedApps = Set<String>()
+        // Planning runs without starting a browser; the executor attaches the browser tools.
+        let system = PlannerPrompt.system + (browserAvailable ? "\n" + PlannerPrompt.browserNote : "")
         for callNumber in 1...maxCalls {
             try Task.checkCancellation()
             onEvent(.step(callNumber))
             // Only observations sent in a prior request can ground this model response.
             let groundedApps = observedApps
-            let response = try await model.complete(ModelRequest(system: PlannerPrompt.system,
+            let response = try await model.complete(ModelRequest(system: system,
                 messages: AgentSession.render(history, keepingImages: 1), tools: readOnly.map(ModelTool.init) + [PlannerPrompt.submit]))
             try Task.checkCancellation()
             if let used = response.usage {

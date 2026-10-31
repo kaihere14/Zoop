@@ -25,7 +25,6 @@ struct AgentSession: Sendable {
     func run(_ task: ExecutorTask, history initialHistory: [ModelMessage]? = nil,
              system: String = ExecutorPrompt.system, allowsStepDone: Bool = false,
              allowsTaskCompletion: Bool = true, failedAttempts: [String] = [],
-             clickRecovery initialRecovery: DialogRecoveryState = DialogRecoveryState(),
              onEvent: @Sendable (AgentEvent) -> Void = { _ in }) async -> SessionOutcome {
         var history = initialHistory ?? [.user(ExecutorPrompt.taskMessage(task))]
         // Failed actions since the last successful one. At the limit the session refuses further
@@ -37,8 +36,9 @@ struct AgentSession: Sendable {
         var nudges = 0
         var focusedMouseApp: String?
         var observedMouseApp: String?
-        var clickRecovery = initialRecovery
-        let toolList = SessionTools.catalog.map(ModelTool.init) + ExecutorPrompt.controlTools + (allowsStepDone ? [ExecutorPrompt.stepDoneTool] : [])
+        let extraTools = await tools.extraModelTools()
+        let system = extraTools.contains { $0.name.hasPrefix("browser_") } ? system + "\n\n" + BrowserToolRunner.guide : system
+        let toolList = SessionTools.catalog.map(ModelTool.init) + extraTools + ExecutorPrompt.controlTools + (allowsStepDone ? [ExecutorPrompt.stepDoneTool] : [])
         onEvent(.started(model: model.name))
 
         func end(_ status: AgentOutcome.Status, _ summary: String, report: String? = nil) -> SessionOutcome {
@@ -85,8 +85,7 @@ struct AgentSession: Sendable {
             if failures.count >= limits.maxFailedAttempts,
                !response.message.toolCalls.contains(where: {
                    $0.name == ExecutorPrompt.Control.finishTask.rawValue ||
-                   ($0.name == ExecutorPrompt.Control.requestDialogHelp.rawValue &&
-                    Self.arguments($0)?["bundle_id"]?.stringValue.map { clickRecovery.canRequestHelp(in: $0) } == true)
+                   $0.name == ExecutorPrompt.Control.requestDialogHelp.rawValue
                }) {
                 refusedResponses += 1
                 if refusedResponses > 1 {
@@ -127,13 +126,18 @@ struct AgentSession: Sendable {
                     finished = AgentOutcome(status: success ? .completed : .failed, summary: summary, report: report,
                                             steps: step, usage: usage)
                 case .stepDone?:
-                    guard allowsStepDone, let summary = Self.arguments(call)?["summary"]?.stringValue, !summary.isEmpty else {
-                        history.append(.toolResult(id: call.id, Self.invalid("step_done needs a summary and is only available during a plan step")))
+                    guard allowsStepDone, let summary = Self.arguments(call)?["summary"]?.stringValue, !summary.isEmpty,
+                          let complete = Self.arguments(call)?["complete"]?.boolValue else {
+                        history.append(.toolResult(id: call.id, Self.invalid("step_done needs a summary and complete (true or false), and is only available during a plan step")))
                         continue
                     }
                     history.append(.toolResult(id: call.id, #"{"ok":true}"#))
-                    taskFinished = false
-                    finished = AgentOutcome(status: .completed, summary: summary, steps: step, usage: usage)
+                    // An unfinished step ends the task: later steps depend on it, so moving on would
+                    // act on missing results (for example saving a quote whose numbers were never computed).
+                    taskFinished = !complete
+                    finished = AgentOutcome(status: complete ? .completed : .failed,
+                                            summary: complete ? summary : "This step could not be completed, so Zoop stopped before the next one. \(summary)",
+                                            steps: step, usage: usage)
                 case .askUser?:
                     guard let question = Self.arguments(call)?["question"]?.stringValue, !question.isEmpty else {
                         history.append(.toolResult(id: call.id, Self.invalid("ask_user needs a question")))
@@ -154,16 +158,13 @@ struct AgentSession: Sendable {
                     history.append(.toolResult(id: call.id, #"{"ok":true}"#))
                 case .requestDialogHelp?, nil:
                     let dialogHelp = call.name == ExecutorPrompt.Control.requestDialogHelp.rawValue
-                    let isAction = dialogHelp || (SessionTools.catalog.first { $0.name.rawValue == call.name }.map { !$0.isReadOnly } ?? false)
+                    let isAction = dialogHelp || BrowserToolRunner.isAction(call.name) || (SessionTools.catalog.first { $0.name.rawValue == call.name }.map { !$0.isReadOnly } ?? false)
                     let args = Self.arguments(call)
-                    if dialogHelp {
-                        guard let app = args?["bundle_id"]?.stringValue, clickRecovery.canRequestHelp(in: app) else {
-                            history.append(.toolResult(id: call.id, Self.invalid("First try Accessibility, then inspect a screenshot and try strategy mouse in this app. After checking that result, request_dialog_help can show its actual dialog choices to the person.")))
-                            continue
-                        }
-                        // One human fallback per recovery sequence, including at the retry
-                        // limit. A failed helper press cannot create another automatic loop.
-                        clickRecovery.clear(app)
+                    // Dialogs are answered by the person, never clicked by the agent. Asking is
+                    // allowed at any time, including at the retry limit.
+                    if dialogHelp, args?["bundle_id"]?.stringValue?.isEmpty != false {
+                        history.append(.toolResult(id: call.id, Self.invalid("request_dialog_help needs the bundle_id of the app showing the dialog.")))
+                        continue
                     }
                     if call.name == "click", args?["strategy"] == "mouse" {
                         let app = args?["bundle_id"]?.stringValue
@@ -175,7 +176,7 @@ struct AgentSession: Sendable {
                     if isAction, !dialogHelp, failures.count >= limits.maxFailedAttempts {
                         history.append(.toolResult(id: call.id, JSONValue.object([
                             "ok": false, "error": "retry_limit",
-                            "message": .string("\(failures.count) automatic attempts already failed. Do not act again. If both AX and visual clicks failed on an app dialog, request_dialog_help is the final human fallback; otherwise call finish_task with success false, what you tried, and next_step.")]).jsonText))
+                            "message": .string("\(failures.count) automatic attempts already failed. Do not act again. If an app dialog is open, request_dialog_help asks the person to answer it; otherwise call finish_task with success false, what you tried, and next_step.")]).jsonText))
                         continue
                     }
                     onEvent(.toolStarted(name: call.name, arguments: call.arguments))
@@ -183,7 +184,6 @@ struct AgentSession: Sendable {
                     onEvent(.toolFinished(name: call.name, result: result))
                     var text = result.text
                     mustObserve = result.requiresObservation
-                    clickRecovery.record(name: call.name, arguments: args, result: result)
                     if isAction { observedMouseApp = nil }
                     if call.name == "open_app", !result.isError {
                         focusedMouseApp = args?["bundle_id"]?.stringValue
@@ -196,8 +196,6 @@ struct AgentSession: Sendable {
                             failures.append(Self.attempt(call, result))
                             if failures.count < limits.maxFailedAttempts {
                                 text += "\n[Attempt \(failures.count) of \(limits.maxFailedAttempts) failed. Find out why, then try a different method. Do not repeat this action unchanged.]"
-                            } else if let app = args?["bundle_id"]?.stringValue, clickRecovery.canRequestHelp(in: app) {
-                                text += "\n[Automatic attempts exhausted. Inspect the screenshot; if the app dialog is still stuck, request_dialog_help is available as the final human fallback. Do not send more automatic clicks.]"
                             } else {
                                 text += "\n[Attempt \(failures.count) of \(limits.maxFailedAttempts) failed. That was the last attempt: call finish_task now with success false, what you tried, and next_step.]"
                             }
@@ -220,7 +218,7 @@ struct AgentSession: Sendable {
                     return end(.failed, "Cannot check the last click; it may have happened. No retry was sent. \(shot.text)")
                 }
                 screenshots.append(("automatic click verification", image))
-                history.append(.user("Inspect this fresh screenshot before continuing. If an AX click had no effect, focus the app with open_app, screenshot again and try strategy mouse at the visually located target. If both approaches left an in-app dialog stuck, use request_dialog_help with the app bundle_id. Do not repeat a click or the person's dialog choice if its intended effect is already visible. PID mouse delivery and a dialog closing do not establish task completion."))
+                history.append(.user("Inspect this fresh screenshot before continuing. If an AX click had no effect, focus the app with open_app, screenshot again and try strategy mouse at the visually located target. Never click, type or press keys in a dialog or sheet: if one is open, call request_dialog_help with the app bundle_id and the person answers it. Do not repeat a click or the person's dialog choice if its intended effect is already visible. PID mouse delivery and a dialog closing do not establish task completion."))
             }
             if !screenshots.isEmpty {
                 var content: [ModelContent] = []

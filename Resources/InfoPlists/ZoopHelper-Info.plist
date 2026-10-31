@@ -12,5 +12,7 @@
     <key>LSMinimumSystemVersion</key><string>27.0</string>
     <!-- Background agent: no Dock icon, no menu bar. -->
     <key>LSUIElement</key><true/>
+    <!-- Shown in the Automation consent dialog when save_document saves through AppleScript. -->
+    <key>NSAppleEventsUsageDescription</key><string>Zoop saves documents for your tasks by asking the app to save them.</string>
 </dict>
 </plist>

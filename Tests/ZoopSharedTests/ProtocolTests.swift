@@ -25,11 +25,18 @@ import Testing
         .input(action: .setText(SetTextAction(text: "replacement", point: Point(x: 1, y: 2)))),
         .input(action: .key(KeyCombo(key: "a", modifiers: [.command]))),
         .input(action: .scrollTo(ScrollToAction(point: Point(x: 439, y: 359), axis: .horizontal, fraction: 0.5))),
+        .input(action: .sendEmail(SendEmailAction(to: ["a@example.com"], subject: "Quote", body: "Line 1\nLine 2"))),
+        .input(action: .saveDocument(SaveDocumentAction(bundleID: "com.apple.TextEdit", path: "~/Documents/Quote.rtf", overwrite: true))),
     ])
     func requestsRoundTrip(_ request: HelperRequest) throws {
         let envelope = RequestEnvelope(id: 9, request: request)
         let decoded = try WireCoding.decode(RequestEnvelope.self, from: WireCoding.encode(envelope))
         #expect(decoded == envelope)
+    }
+
+    @Test func olderChoicePayloadsDefaultToEnabled() throws {
+        let choice = try JSONDecoder().decode(PermissionChoice.self, from: Data(#"{"id":"a","title":"Allow"}"#.utf8))
+        #expect(choice.enabled)
     }
 
     @Test func olderClickPayloadDefaultsToAccessibility() throws {

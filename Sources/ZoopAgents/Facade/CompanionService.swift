@@ -12,6 +12,13 @@ public protocol CompanionService: Sendable {
     func respond(to messages: [CompanionMessage], pendingPlan: TaskPlan?) async throws -> CompanionReply
     func execute(_ plan: TaskPlan, mode: ApprovalMode, prompter: any UserPrompting,
                  onEvent: @escaping @Sendable (AgentEvent) -> Void) async -> AgentOutcome
+    /// One frame for the live preview: the browser page while the browser is in use,
+    /// otherwise the agent session's screen. Nil when there is nothing to show.
+    func previewFrame() async -> Data?
+}
+
+extension CompanionService {
+    public func previewFrame() async -> Data? { nil }
 }
 
 /// Models are resolved lazily: normal chatting needs only the chat model. Planning and
@@ -27,6 +34,10 @@ public struct LiveCompanionService: CompanionService {
     private let chatModel: (any ChatModel)?
     private let plannerModel: (any ChatModel)?
     private let executorModel: (any ChatModel)?
+    /// Playwright-driven Chrome for websites. Nil when Node.js is missing or tools are injected (tests).
+    public let browser: BrowserSession?
+    /// Separate from the agent's connection, so preview captures never wait behind actions.
+    private let previewConnection: HelperConnection?
 
     public init(configuration: ModelConfiguration? = nil,
                 tools: (any ToolRunning)? = nil, cleaner: (any SessionCleaning)? = nil,
@@ -35,10 +46,16 @@ public struct LiveCompanionService: CompanionService {
         if let configuration { self.configuration = { configuration } } else { self.configuration = { ModelConfiguration() } }
         if let tools {
             self.tools = tools; self.permissions = nil; self.cleaner = cleaner
+            self.browser = nil; self.previewConnection = nil
         } else {
             let connection = HelperConnection(configuration: .init(clientName: "Zoop"))
-            self.tools = SessionToolbox(connection: connection); self.permissions = connection
+            let browser = BrowserSession.npx() == nil ? nil : BrowserSession()
+            let session = SessionToolbox(connection: connection)
+            self.tools = browser.map { BrowserToolRunner(tools: session, browser: $0) } ?? session
+            self.permissions = connection
             self.cleaner = cleaner ?? connection
+            self.browser = browser
+            self.previewConnection = HelperConnection(configuration: .init(clientName: "Zoop preview"))
         }
         self.chatModel = chatModel; self.plannerModel = plannerModel; self.executorModel = executorModel
     }
@@ -55,9 +72,14 @@ public struct LiveCompanionService: CompanionService {
         let reply = try await ChatAgent(model: chat).reply(to: messages, pendingPlan: pendingPlan)
         guard let request = reply.planningRequest else { return CompanionReply(text: reply.text) }
         let planner = try plannerModel ?? configuration().model(for: .planner)
-        let proposed = try await PlannerAgent(model: planner, tools: tools).plan(request)
+        let proposed = try await PlannerAgent(model: planner, tools: tools, browserAvailable: browser != nil).plan(request)
         return CompanionReply(text: reply.text.isEmpty ? "Here’s the proposed plan. Review it, then choose Execute the plan." : reply.text,
                               plan: proposed.plan)
+    }
+
+    public func previewFrame() async -> Data? {
+        if let browser, await browser.isActive, let frame = await browser.previewFrame() { return frame }
+        return try? await previewConnection?.capture(CaptureOptions(maxPixelWidth: 1280, showsCursor: false)).png
     }
 
     public func execute(_ plan: TaskPlan, mode: ApprovalMode, prompter: any UserPrompting,

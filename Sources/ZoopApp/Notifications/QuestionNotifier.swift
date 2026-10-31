@@ -54,12 +54,13 @@ final class QuestionNotifier: NSObject, QuestionNotifying, UNUserNotificationCen
             content.title = question.permission.map { $0.kind == .appDialog ? "\($0.ownerName) needs your choice" : "Permission needed in the agent session" }
                 ?? (question.kind == .confirm ? "Zoop needs your approval" : "Zoop has a question")
             if let task { content.subtitle = task }
-            content.body = question.text
+            content.body = question.permission.flatMap(PermissionCardText.disabledNote).map { question.text + "\n\n" + $0 } ?? question.text
             content.categoryIdentifier = question.kind == .confirm ? ID.confirm : ID.info
             if let permission = question.permission {
                 let category = ID.permission + question.id.uuidString
                 // Exact dialog labels; never turn 'Allow once' into a generic 'Allow'.
-                let actions = permission.choices.prefix(4).map {
+                // Greyed-out buttons can't be pressed; the notch card shows them and explains why.
+                let actions = permission.choices.filter(\.enabled).prefix(4).map {
                     UNNotificationAction(identifier: ID.choice + $0.id, title: $0.title, options: [])
                 }
                 categories = categories.filter { !$0.identifier.hasPrefix(ID.permission) }

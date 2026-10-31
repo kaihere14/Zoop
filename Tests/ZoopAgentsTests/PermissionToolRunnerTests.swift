@@ -14,8 +14,17 @@ actor PermissionSource: PermissionHandling {
     var replaceFirst: Bool
     var appPrompt: PermissionPrompt?
     init(confirmed: Bool = true, replaceFirst: Bool = false) { self.confirmed = confirmed; self.replaceFirst = replaceFirst }
-    func permissionPrompts() async throws -> [PermissionPrompt] { pending }
-    func setAppDialog(_ prompt: PermissionPrompt) { pending = []; appPrompt = prompt }
+    private var scans = 0
+    func permissionPrompts() async throws -> [PermissionPrompt] {
+        scans += 1
+        // The pre-action scan sees nothing; the dialog appears once the action asked for consent.
+        if scans == 2, let next = queued { queued = nil; pending = [next] }
+        return pending
+    }
+    func setAppDialog(_ prompt: PermissionPrompt?) { pending = []; appPrompt = prompt }
+    /// A system consent dialog that appears after the next action runs.
+    private var queued: PermissionPrompt?
+    func queueSystemPrompt(_ prompt: PermissionPrompt) { queued = prompt }
     func appDialogs(bundleID: String) async throws -> [PermissionPrompt] { appPrompt.map { [$0] } ?? [] }
     func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
         selections.append((promptID, choiceID))
@@ -33,9 +42,14 @@ actor PermissionSource: PermissionHandling {
 
 actor PermissionPrompter: UserPrompting {
     var replies: [String]
+    var answers: [String]
     private(set) var prompts: [PermissionPrompt] = []
-    init(_ replies: [String]) { self.replies = replies }
-    func ask(_ question: String) async -> String? { nil }
+    private(set) var questions: [String] = []
+    init(_ replies: [String], answers: [String] = []) { self.replies = replies; self.answers = answers }
+    func ask(_ question: String) async -> String? {
+        questions.append(question)
+        return answers.isEmpty ? nil : answers.removeFirst()
+    }
     func choosePermission(_ prompt: PermissionPrompt) async -> String? {
         prompts.append(prompt)
         return replies.isEmpty ? nil : replies.removeFirst()
@@ -105,5 +119,93 @@ actor PermissionPrompter: UserPrompting {
         #expect(!result.isError)
         #expect(await prompter.prompts.map(\.id) == ["location", "new"])
         #expect(await source.selections.map(\.1) == ["allow", "once"])
+    }
+
+    // MARK: - Dialogs and saves always go to the person
+
+    static let saveSheet = PermissionPrompt(id: "save-sheet", ownerApp: "com.apple.TextEdit", ownerName: "TextEdit",
+        message: "Save As: Untitled.rtf\nWhere: Documents",
+        choices: [.init(id: "cancel", title: "Cancel"), .init(id: "save", title: "Save", enabled: false)], kind: .appDialog)
+
+    @Test func aDialogTheActionOpensIsShownToThePersonImmediately() async {
+        let source = PermissionSource(), prompter = PermissionPrompter(["cancel"]), tools = OpensDialog(source, Self.saveSheet)
+        await source.setAppDialog(nil) // no permission prompt pending
+        let result = await PermissionToolRunner(tools: tools, permissions: source, prompter: prompter, onEvent: { _ in })
+            .call("press_key", argumentsJSON: #"{"keys":"cmd+s"}"#)
+        #expect(!result.isError && result.requiresObservation)
+        #expect(result.content["human_choice"] == "Cancel")
+        #expect(result.content["dialog_disabled_choices"] == ["Save"])
+        #expect(result.content["next"]?.stringValue?.contains("save_document") == true)
+        #expect(await prompter.prompts == [Self.saveSheet])
+        #expect(await source.selections.map(\.1) == ["cancel"])
+    }
+
+    @Test func anOpenDialogIsAnsweredBeforeTheActionAndTheActionIsNotRun() async {
+        let source = PermissionSource(), prompter = PermissionPrompter(["cancel"]), tools = FakeTools()
+        await source.setAppDialog(Self.saveSheet)
+        let result = await PermissionToolRunner(tools: tools, permissions: source, prompter: prompter, onEvent: { _ in })
+            .call("click", argumentsJSON: #"{"bundle_id":"com.apple.TextEdit","element":"Save"}"#)
+        #expect(result.content["human_choice"] == "Cancel")
+        #expect(result.content["detail"]?.stringValue?.hasPrefix("Not run") == true)
+        #expect(await tools.called.isEmpty)
+    }
+
+    @Test(arguments: [("yes", 1), ("no", 0)])
+    func everySaveNeedsThePersonsApproval(_ answer: String, _ saves: Int) async {
+        let source = PermissionSource(), tools = FakeTools()
+        await source.setAppDialog(nil)
+        let prompter = PermissionPrompter([], answers: [answer])
+        let result = await PermissionToolRunner(tools: tools, permissions: source, prompter: prompter, onEvent: { _ in })
+            .call("save_document", argumentsJSON: #"{"bundle_id":"com.apple.TextEdit","path":"~/Documents/MacBook Quote.rtf"}"#)
+        #expect(await prompter.questions == ["Save the TextEdit document as ~/Documents/MacBook Quote.rtf?"])
+        #expect(await tools.called.count == saves)
+        #expect(result.isError == (saves == 0))
+        if saves == 0 { #expect(result.content["error"] == "declined") }
+    }
+
+    @Test(arguments: [("yes", 1), ("no", 0)])
+    func everyEmailNeedsThePersonsApprovalOfTheExactMessage(_ answer: String, _ sends: Int) async {
+        let source = PermissionSource(), tools = FakeTools()
+        await source.setAppDialog(nil)
+        let prompter = PermissionPrompter([], answers: [answer])
+        let result = await PermissionToolRunner(tools: tools, permissions: source, prompter: prompter, onEvent: { _ in })
+            .call("send_email", argumentsJSON: #"{"to":"nikhil@example.com","subject":"MacBook quote","body":"Total: 530646"}"#)
+        #expect(await prompter.questions == ["Send this email to nikhil@example.com?\n\nSubject: MacBook quote\n\nTotal: 530646"])
+        #expect(await tools.called.count == sends)
+        if sends == 0 { #expect(result.content["error"] == "declined") }
+    }
+
+    @Test func consentPendingActionRunsOnceMoreAfterThePersonAnswers() async {
+        let source = PermissionSource(), tools = ConsentThenSave()
+        await source.setAppDialog(nil)
+        await source.queueSystemPrompt(locationPermission)
+        let prompter = PermissionPrompter(["allow"], answers: ["yes"])
+        let result = await PermissionToolRunner(tools: tools, permissions: source, prompter: prompter, onEvent: { _ in })
+            .call("save_document", argumentsJSON: #"{"bundle_id":"com.apple.TextEdit","path":"~/Documents/Quote.rtf"}"#)
+        #expect(!result.isError && result.content["verified"] == true)
+        #expect(await tools.calls == 2)
+        #expect(await source.selections.map(\.1) == ["allow"])
+    }
+}
+
+/// Opens the given dialog in the app when it runs, like cmd+s opening a Save sheet.
+actor OpensDialog: ToolRunning {
+    let source: PermissionSource
+    let dialog: PermissionPrompt
+    init(_ source: PermissionSource, _ dialog: PermissionPrompt) { self.source = source; self.dialog = dialog }
+    func call(_ name: String, argumentsJSON: String) async -> ToolResult {
+        await source.setAppDialog(dialog)
+        return ToolResult(tool: name, isError: false, content: ["ok": true, "method": "pidKeys", "app": .string(dialog.ownerApp)])
+    }
+}
+
+/// First call: macOS shows a consent dialog instead of running. Second call: saved.
+actor ConsentThenSave: ToolRunning {
+    private(set) var calls = 0
+    func call(_ name: String, argumentsJSON: String) async -> ToolResult {
+        calls += 1
+        return calls == 1
+            ? ToolResult(tool: name, isError: true, content: ["ok": false, "error": "consent_pending", "message": "asking"])
+            : ToolResult(tool: name, isError: false, content: ["ok": true, "verified": true])
     }
 }

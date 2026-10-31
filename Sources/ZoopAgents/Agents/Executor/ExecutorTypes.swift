@@ -4,6 +4,12 @@ import ZoopShared
 /// Runs session tools. `SessionToolbox` is the real one; tests use fakes.
 public protocol ToolRunning: Sendable {
     func call(_ name: String, argumentsJSON: String) async -> ToolResult
+    /// Tools beyond the session catalog, such as the browser tools. Empty by default.
+    func extraModelTools() async -> [ModelTool]
+}
+
+extension ToolRunning {
+    public func extraModelTools() async -> [ModelTool] { [] }
 }
 
 extension SessionToolbox: ToolRunning {}
@@ -31,11 +37,12 @@ public protocol UserPrompting: Sendable {
 extension UserPrompting {
     public func ask(_ question: String, kind: QuestionKind) async -> String? { await ask(question) }
     public func choosePermission(_ prompt: PermissionPrompt) async -> String? {
-        let choices = prompt.choices.enumerated().map { "\($0.offset + 1). \($0.element.title)" }.joined(separator: "\n")
+        let choices = prompt.choices.enumerated().map { "\($0.offset + 1). \($0.element.title)\($0.element.enabled ? "" : " (greyed out, can't be chosen)")" }.joined(separator: "\n")
         let heading = prompt.kind == .appDialog ? "Dialog in \(prompt.ownerName)" : "System permission request (\(prompt.ownerName))"
         guard let reply = await ask("\(heading):\n\(prompt.message)\n\(choices)\nChoose the exact label or number; cancel to stop.", kind: .info) else { return nil }
-        if let number = Int(reply.trimmingCharacters(in: .whitespacesAndNewlines)), prompt.choices.indices.contains(number - 1) { return prompt.choices[number - 1].id }
-        return prompt.choices.first { $0.title == reply }?.id
+        if let number = Int(reply.trimmingCharacters(in: .whitespacesAndNewlines)), prompt.choices.indices.contains(number - 1),
+           prompt.choices[number - 1].enabled { return prompt.choices[number - 1].id }
+        return prompt.choices.first { $0.title == reply && $0.enabled }?.id
     }
 }
 
