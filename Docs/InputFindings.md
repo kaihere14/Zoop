@@ -4,7 +4,7 @@ Status: implementation and automated socket tests complete. Calculator app launc
 
 ## Setup
 
-The new client speaks protocol v2. Build and sign with `Scripts/bundle-helper.sh`, then run the install yourself in Warp:
+The client now speaks protocol v3 for the explicit AX page-scroll spike. Build and sign with `Scripts/bundle-helper.sh`, then run the install yourself in Warp; the installed v2 helper must be replaced before testing:
 
 ```bash
 cd /Applications/Coding/Hackathon/Zoop
@@ -62,6 +62,17 @@ Record whether the focus click used `axFocus`, whether key typing changed AXValu
 
 Create a long document with `set-text` using a quoted multiline string (with `--verify`). Capture it, then run `scroll X Y --dy 8 --verify` over its body and capture again. A pidScroll report only confirms posting; compare visible text to establish movement. Repeat with `--dy -8` to test the reverse direction.
 
+The PID wheel strategy produced identical frames in TextEdit after its target selection was corrected. The next explicit strategy is AX page scrolling, approved by the user and implemented in protocol v3. With the existing 80-line document, reinstall the rebuilt helper and test:
+
+```bash
+build/zoop-bridge key cmd+up --verify &&
+build/zoop-bridge capture --max-width 1280 --out frames/page-before &&
+build/zoop-bridge scroll-page 439 359 --direction down --verify &&
+build/zoop-bridge capture --max-width 1280 --out frames/page-after
+```
+
+Expect axScrollPage targeting TextEdit's AXScrollArea and detail naming AXScrollDownByPage. The accepted count and AXError describe the AX call, not proof of viewport movement. Compare the captures, then test `scroll-page 439 359 --direction up --verify` followed by another capture. `--pages N` requests 1–10 pages, default 1. Stop on error without retry or wheel fallback. The old line-based `scroll` command remains available for comparisons.
+
 Try `click X Y --right --verify` on the document and record whether AXShowMenu or pidMouse was used and whether a context menu appeared. Test double-click on an item that advertises AXOpen, or record the pidMouse fallback when no ancestor does. Check the resulting selection/open action visually.
 
 A second round should use an existing browser's web content and a SwiftUI control, located with screenshots and `inspect`. Record whether events fall back to pidMouse/pidScroll, whether they affect the intended view, and whether all primary-session checks pass. Test Cmd+L in a browser with `key cmd+l --verify`, then inspect whether its address field gained focus. These cases are pending and may determine the final API.
@@ -83,6 +94,7 @@ A second round should use an existing browser's web content and a SwiftUI contro
 | TextEdit Cmd+Up | pidKeys / n/a | Before-scroll screenshot shows Line 001 at the top after posting Cmd+Up | Cursor drift 0.00 pt over 114 samples; primary frontmost pid 37857 unchanged; all input counter deltas 0 | Start-of-document viewport confirmed, 2026-10-31 |
 | Initial long-document scroll | pidScroll / n/a; wrongly targeted Notification Center pid 39682, window 41825 | Before/after screenshots both show Line 001 at the top; no document movement | Cursor drift 0.00 pt over 104 samples; primary frontmost pid 37857 unchanged; all input counter deltas 0 | Wrong-app selection fixed |
 | PID scroll after target-selection fix | pidScroll / n/a; TextEdit pid 50879, window 43591 | AX target is First Text View; before/after PNGs are byte-identical | Scroll: cursor drift 0.00 pt over 105 samples; primary frontmost pid 37857 unchanged; all input counter deltas 0 | Routing correct; no observed scrolling in this run |
+| Explicit AX page scroll | axScrollPage; implementation ready | AXScrollArea advertises directional page actions; real execution not tested yet | — | Pending protocol v3 installation and real-session test |
 | Right/double click | — | — | — | Pending |
 | Browser/SwiftUI PID mouse and scroll | — | — | — | Pending |
 | Browser Cmd+L | — | — | — | Pending |
