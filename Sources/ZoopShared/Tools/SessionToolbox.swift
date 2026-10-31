@@ -6,6 +6,13 @@ public struct ToolImage: Sendable, Equatable {
     public var mediaType: String
     public var width: Int
     public var height: Int
+
+    public init(data: Data, mediaType: String, width: Int, height: Int) {
+        self.data = data
+        self.mediaType = mediaType
+        self.width = width
+        self.height = height
+    }
 }
 
 /// The outcome of one tool call. `content` is what the model reads; `image` is attached
@@ -15,6 +22,13 @@ public struct ToolResult: Sendable, Equatable {
     public var isError: Bool
     public var content: JSONValue
     public var image: ToolImage?
+
+    public init(tool: String, isError: Bool, content: JSONValue, image: ToolImage? = nil) {
+        self.tool = tool
+        self.isError = isError
+        self.content = content
+        self.image = image
+    }
 
     /// `content` as compact JSON, the text to send back to the model.
     public var text: String { content.jsonText }
@@ -119,7 +133,9 @@ public struct SessionToolbox: Sendable {
             let right = args.string("button") == "right"
             let double = args.bool("double", default: false)
             if right && double { throw ToolCallError.invalidArguments("double click is only available with the left button") }
-            let point = Point(x: args.number("x")!, y: args.number("y")!)
+            let byPoint = try Self.checkClickTarget(args)
+            let point = byPoint ? Point(x: args.number("x")!, y: args.number("y")!)
+                                : try await resolve(args.string("element")!, in: args.string("bundle_id")!)
             return try await act(tool, .click(ClickAction(point: point, button: right ? .right : .left, count: double ? 2 : 1)))
 
         case .typeText:
@@ -141,7 +157,92 @@ public struct SessionToolbox: Sendable {
             let point = Point(x: args.number("x")!, y: args.number("y")!)
             let axis: ScrollAxis = args.bool("horizontal", default: false) ? .horizontal : .vertical
             return try await act(tool, .scrollTo(ScrollToAction(point: point, axis: axis, fraction: args.number("position")!)))
+
+        case .batch:
+            return try await runBatch(args.values["actions"] ?? .array([]))
         }
+    }
+
+    /// A click needs exactly one target form. Returns true for a point, false for a name.
+    static func checkClickTarget(_ args: ToolArguments) throws(ToolCallError) -> Bool {
+        let byPoint = args.has("x") && args.has("y")
+        let byName = args.has("bundle_id") && args.has("element")
+        guard byPoint != byName, args.has("x") == args.has("y"), args.has("bundle_id") == args.has("element") else {
+            throw .invalidArguments("give x and y, or bundle_id and element (not both)")
+        }
+        return byPoint
+    }
+
+    // MARK: - Batch
+
+    /// Checks every action first, so a malformed one stops the batch before anything runs,
+    /// then runs them in order and stops at the first failure or `verified: false`.
+    private func runBatch(_ value: JSONValue) async throws -> ToolResult {
+        guard case .array(let items) = value else { throw ToolCallError.invalidArguments("actions must be an array") }
+        var planned: [(SessionToolName, JSONValue)] = []
+        for (index, item) in items.enumerated() {
+            guard var fields = item.objectValue else { throw ToolCallError.invalidArguments("action \(index + 1) must be an object") }
+            let name = fields.removeValue(forKey: "tool")?.stringValue ?? ""
+            guard let tool = SessionToolName(rawValue: name), SessionTools.batchable.contains(tool) else {
+                throw ToolCallError.invalidArguments("action \(index + 1): tool must be one of \(SessionTools.batchable.map(\.rawValue).joined(separator: ", "))")
+            }
+            let arguments = JSONValue.object(fields.filter { $0.value != .null })
+            do {
+                let checked = try SessionTools.definition(for: tool).validate(arguments)
+                if tool == .click { _ = try Self.checkClickTarget(checked) }
+            } catch let error as ToolCallError {
+                guard case .invalidArguments(let message) = error else { throw error }
+                throw ToolCallError.invalidArguments("action \(index + 1) (\(name)): \(message)")
+            }
+            planned.append((tool, arguments))
+        }
+        var results: [JSONValue] = []
+        for (index, (tool, arguments)) in planned.enumerated() {
+            let result = await call(tool.rawValue, arguments: arguments)
+            var entry: [String: JSONValue] = ["tool": .string(tool.rawValue), "ok": .bool(!result.isError)]
+            for key in ["method", "verified", "target", "error", "message"] { if let field = result.content[key] { entry[key] = field } }
+            results.append(.object(entry))
+            if result.isError || result.content["verified"] == false {
+                var content: [String: JSONValue] = [
+                    "ok": false, "error": result.content["error"] ?? "not_verified",
+                    "message": .string("Action \(index + 1) of \(planned.count) (\(tool.rawValue)) \(result.isError ? "failed" : "did not take effect"): \(result.content["message"]?.stringValue ?? result.content["detail"]?.stringValue ?? "")"),
+                    "retry": result.content["retry"] ?? "after_check",
+                    "completed": .number(Double(index)), "total": .number(Double(planned.count)), "results": .array(results),
+                    "next": .string("Actions before it ran. Take a screenshot, fix action \(index + 1), then send it and the remaining actions."),
+                ]
+                content["ok"] = false
+                return ToolResult(tool: SessionToolName.batch.rawValue, isError: true, content: .object(content))
+            }
+        }
+        return Self.success(.batch, ["completed": .number(Double(planned.count)), "total": .number(Double(planned.count)),
+                                     "results": .array(results), "next": "Take a screenshot to confirm the final state."])
+    }
+
+    // MARK: - Targets by name
+
+    /// Finds the on-screen element with this title or label (falling back to value) in an
+    /// app, preferring pressable elements, and returns its center.
+    private func resolve(_ element: String, in bundleID: String) async throws -> Point {
+        let list = try await connection.elements(ElementQuery(bundleID: bundleID, interactiveOnly: true, limit: 1000))
+            .filter { ($0.frame?.width ?? 0) > 0 && ($0.frame?.height ?? 0) > 0 }
+        func normalized(_ text: String?) -> String? { text?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        let wanted = normalized(element)
+        var matches = list.filter { normalized($0.title) == wanted || normalized($0.label) == wanted }
+        if matches.isEmpty { matches = list.filter { normalized($0.value) == wanted } }
+        let pressable = matches.filter { $0.actions.contains("AXPress") }
+        if !pressable.isEmpty { matches = pressable }
+        let centers = matches.compactMap { $0.frame?.center }
+        var unique: [Point] = []
+        for center in centers where !unique.contains(where: { abs($0.x - center.x) < 1 && abs($0.y - center.y) < 1 }) { unique.append(center) }
+        guard let first = unique.first else {
+            let names = list.compactMap(\.name).filter { $0.lowercased().contains(wanted ?? "") || (wanted ?? "").contains($0.lowercased()) }
+            let hint = names.isEmpty ? "Call list_elements to see the names." : "Similar: " + names.prefix(8).map { "\"\($0)\"" }.joined(separator: ", ")
+            throw HelperFailure(.notFound, "no on-screen element named \"\(element)\" in \(bundleID). \(hint)")
+        }
+        guard unique.count == 1 else {
+            throw HelperFailure(.unsupported, "\(unique.count) elements are named \"\(element)\", at \(unique.prefix(4).map(\.description).joined(separator: ", ")). Click by x and y instead.")
+        }
+        return first
     }
 
     private func act(_ tool: SessionToolName, _ action: InputAction) async throws -> ToolResult {

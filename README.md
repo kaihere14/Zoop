@@ -8,6 +8,8 @@ Implemented so far: the **persistent session bridge**, covering `ZoopShared/Prot
 
 The helper can also **act in the agent session**: Accessibility clicks, keystrokes and shortcuts, exact text writes, scrolling and app launching, all without touching your cursor or keyboard. The agent layer reaches these through ten tools in `ZoopShared/Tools`; [the agent tool reference](Docs/AgentTools.md) explains each tool, its results and how to recover from failures, and [input findings](Docs/InputFindings.md) summarizes what was tested. Protocol v5 requires rebuilding and reinstalling both bridge binaries together.
 
+The **agent layer** has started: a provider-neutral model layer and the executor agent, which runs a task end to end through those tools. Try it with `swift run zoop-agent run "…"`; see [the agent layer guide](Docs/AgentLayer.md). The chat agent and UI wiring are next.
+
 The native UI includes streaming chat, task approval, live activities, a sleeping mascot, and sample report exports. Its execution provider currently uses demo data; connecting the interface to the session bridge and real automation remains separate work. The web reference remains in `Web/NotchDock`.
 
 On the project’s macOS 27+/Xcode 27 toolchain, run `swift run Zoop` from this folder. To create a local app bundle, run `./Scripts/bundle.sh`. AppKit compilation and visual verification still need to run on a Mac; the UI implementation was prepared on Linux.
@@ -94,7 +96,7 @@ Zoop/
 │   │   │   ├── Chat/               # Small model: conversation + intent
 │   │   │   └── Executor/           # Main model: computer use via the helper
 │   │   ├── Delegation/             # How one agent hands work to a sub-agent
-│   │   ├── LLM/                    # Claude API client, model profiles
+│   │   ├── LLM/                    # Provider-neutral model layer (OpenAI-compatible adapter)
 │   │   ├── Tools/                  # Tool definitions + the computer-use bridge
 │   │   ├── Queue/                  # Task queue, states, cancellation
 │   │   └── Events/                 # Event stream to the UI (progress, status)
@@ -155,7 +157,7 @@ Step 1 is the riskiest. We need to prove that input reaches a background session
 - **Screen:** ScreenCaptureKit
 - **Input:** Core Graphics events, Accessibility API
 - **IPC:** Unix domain socket in the shared folder
-- **AI:** Claude API. Chat uses a small model and the executor uses a stronger computer-use model. Models are set in config.
+- **AI:** provider-neutral. Agents use a `ChatModel` interface with an OpenAI-compatible adapter (Gemini, OpenRouter, Groq, OpenAI, Ollama, LM Studio); provider and model per agent are set in config. See [the agent layer guide](Docs/AgentLayer.md).
 - **Requirements:** macOS 27+, Xcode 27 (Swift 6.4). Select Xcode with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`, because Command Line Tools alone can't build the Swift Testing tests.
 
 ## Build and test

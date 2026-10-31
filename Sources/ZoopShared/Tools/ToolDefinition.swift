@@ -3,7 +3,7 @@ import Foundation
 /// One argument of a tool.
 public struct ToolParameter: Sendable, Equatable {
     public enum Kind: String, Sendable {
-        case string, number, integer, boolean
+        case string, number, integer, boolean, array
     }
 
     public var name: String
@@ -16,10 +16,12 @@ public struct ToolParameter: Sendable, Equatable {
     public var maximum: Double?
     /// Documented default when the argument is omitted.
     public var defaultValue: JSONValue?
+    /// Schema of each item, for array parameters. `minimum`/`maximum` bound the item count.
+    public var items: JSONValue?
 
     public init(_ name: String, _ kind: Kind, _ description: String, required: Bool = true,
                 allowed: [String]? = nil, minimum: Double? = nil, maximum: Double? = nil,
-                defaultValue: JSONValue? = nil) {
+                defaultValue: JSONValue? = nil, items: JSONValue? = nil) {
         self.name = name
         self.kind = kind
         self.description = description
@@ -28,13 +30,20 @@ public struct ToolParameter: Sendable, Equatable {
         self.minimum = minimum
         self.maximum = maximum
         self.defaultValue = defaultValue
+        self.items = items
     }
 
     var schema: JSONValue {
         var object: [String: JSONValue] = ["type": .string(kind.rawValue), "description": .string(description)]
         if let allowed { object["enum"] = .array(allowed.map(JSONValue.string)) }
-        if let minimum { object["minimum"] = .number(minimum) }
-        if let maximum { object["maximum"] = .number(maximum) }
+        if kind == .array {
+            if let items { object["items"] = items }
+            if let minimum { object["minItems"] = .number(minimum) }
+            if let maximum { object["maxItems"] = .number(maximum) }
+        } else {
+            if let minimum { object["minimum"] = .number(minimum) }
+            if let maximum { object["maximum"] = .number(maximum) }
+        }
         if let defaultValue { object["default"] = defaultValue }
         return .object(object)
     }
@@ -112,6 +121,10 @@ extension ToolParameter {
             }
         case .boolean:
             guard value.boolValue != nil else { throw .invalidArguments("'\(name)' must be true or false") }
+        case .array:
+            guard case .array(let elements) = value else { throw .invalidArguments("'\(name)' must be an array") }
+            if let minimum, Double(elements.count) < minimum { throw .invalidArguments("'\(name)' needs at least \(Int(minimum)) item\(minimum == 1 ? "" : "s")") }
+            if let maximum, Double(elements.count) > maximum { throw .invalidArguments("'\(name)' allows at most \(Int(maximum)) items") }
         case .number, .integer:
             guard let number = value.numberValue, number.isFinite else { throw .invalidArguments("'\(name)' must be a number") }
             if kind == .integer, number.rounded() != number { throw .invalidArguments("'\(name)' must be a whole number") }

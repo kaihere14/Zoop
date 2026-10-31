@@ -28,7 +28,6 @@ import Testing
     @Test func validationRejectsBadArgumentsBeforeTheHelper() {
         let click = SessionTools.definition(for: .click)
         let cases: [(JSONValue, String)] = [
-            (["x": 1], "missing required argument 'y'"),
             (["x": 1, "y": 2, "z": 3], "unknown argument 'z'"),
             (["x": "1", "y": 2], "'x' must be a number"),
             (["x": -1, "y": 2], "'x' must be at least 0"),
@@ -48,6 +47,8 @@ import Testing
         #expect(throws: Never.self) { try click.validate(["x": 1.5, "y": 2, "button": "right"]) }
         #expect(throws: ToolCallError.self) { try SessionTools.definition(for: .listElements).validate(["bundle_id": "a", "limit": 2.5]) }
         #expect(throws: ToolCallError.self) { try SessionTools.definition(for: .scrollTo).validate(["x": 1, "y": 2, "position": 1.5]) }
+        #expect(throws: ToolCallError.invalidArguments("missing required argument 'text'")) { try SessionTools.definition(for: .setText).validate([:]) }
+        #expect(throws: ToolCallError.invalidArguments("'actions' needs at least 1 item")) { try SessionTools.definition(for: .batch).validate(["actions": []]) }
         #expect(throws: Never.self) { try SessionTools.definition(for: .sessionStatus).validate(.null) }
     }
 

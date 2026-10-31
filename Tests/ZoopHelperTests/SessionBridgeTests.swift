@@ -502,3 +502,63 @@ final class SilentHelper: @unchecked Sendable {
         #expect(result.content["retry"] == "no")
     }
 }
+
+@Suite(.serialized) struct BatchAndNamedClickTests {
+    @Test func clicksByNameAndRunsBatchesInOrder() async throws {
+        let path = temporarySocketPath()
+        let recorder = ActionRecorder()
+        let server = try startServer(at: path, backend: FakeBackend(actionRecorder: recorder))
+        defer { server.stop() }
+        let connection = HelperConnection(configuration: testConfiguration(path))
+        let toolbox = SessionToolbox(connection: connection)
+
+        let named = await toolbox.call("click", argumentsJSON: #"{"bundle_id": "test.app", "element": " 7 "}"#)
+        #expect(!named.isError)
+
+        let missing = await toolbox.call("click", argumentsJSON: #"{"bundle_id": "test.app", "element": "9"}"#)
+        #expect(missing.content["error"] == "not_found")
+        #expect(missing.content["message"]?.stringValue?.contains("list_elements") == true)
+
+        let batch = await toolbox.call("batch", argumentsJSON: #"""
+        {"actions": [{"tool": "click", "bundle_id": "test.app", "element": "7"},
+                     {"tool": "press_key", "keys": "return", "x": null},
+                     {"tool": "type_text", "text": "hi"}]}
+        """#)
+        #expect(!batch.isError)
+        #expect(batch.content["completed"] == 3)
+        #expect(await recorder.actions == [
+            .click(ClickAction(point: Point(x: 25, y: 40))),
+            .click(ClickAction(point: Point(x: 25, y: 40))),
+            .key(KeyCombo(key: "return")),
+            .type(text: "hi"),
+        ])
+        await connection.disconnect()
+    }
+
+    @Test func batchesCheckEveryActionFirstAndStopAtTheFirstFailure() async throws {
+        let path = temporarySocketPath()
+        let recorder = ActionRecorder()
+        let server = try startServer(at: path, backend: FakeBackend(actionRecorder: recorder))
+        defer { server.stop() }
+        let connection = HelperConnection(configuration: testConfiguration(path))
+        let toolbox = SessionToolbox(connection: connection)
+
+        let malformed = await toolbox.call("batch", argumentsJSON: #"{"actions": [{"tool": "press_key", "keys": "a"}, {"tool": "click", "x": 1}]}"#)
+        #expect(malformed.content["error"] == "invalid_arguments")
+        #expect(malformed.content["message"]?.stringValue?.hasPrefix("action 2 (click)") == true)
+        let observing = await toolbox.call("batch", argumentsJSON: #"{"actions": [{"tool": "screenshot"}]}"#)
+        #expect(observing.content["error"] == "invalid_arguments")
+        let both = await toolbox.call("click", argumentsJSON: #"{"x": 1, "y": 2, "bundle_id": "test.app", "element": "7"}"#)
+        #expect(both.content["error"] == "invalid_arguments")
+        #expect(await recorder.actions.isEmpty)
+
+        let stopped = await toolbox.call("batch", argumentsJSON: #"""
+        {"actions": [{"tool": "press_key", "keys": "a"}, {"tool": "click", "bundle_id": "test.app", "element": "9"}, {"tool": "press_key", "keys": "b"}]}
+        """#)
+        #expect(stopped.isError)
+        #expect(stopped.content["error"] == "not_found")
+        #expect(stopped.content["completed"] == 1)
+        #expect(await recorder.actions == [.key(KeyCombo(key: "a"))])
+        await connection.disconnect()
+    }
+}

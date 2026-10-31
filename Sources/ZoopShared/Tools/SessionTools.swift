@@ -12,6 +12,7 @@ public enum SessionToolName: String, Sendable, CaseIterable, Codable {
     case setText = "set_text"
     case pressKey = "press_key"
     case scrollTo = "scroll_to"
+    case batch
 }
 
 /// The single source of truth for the agent-facing tool layer: definitions, the operating
@@ -39,9 +40,11 @@ public enum SessionTools {
 
     Work in a loop: observe, act, check.
     1. Observe with `screenshot` (what is visible) and `list_elements` (exact targets: role, name, \
-    center point and supported actions). Prefer element centers from `list_elements` over positions \
-    estimated from pixels.
-    2. Act with one tool call at a time. Actions run one after another in the agent session.
+    center point and supported actions). To click a named element, pass its app and name \
+    (`bundle_id` and `element`) instead of copying coordinates.
+    2. Act. When several actions do not need a look at the screen in between (pressing a known \
+    sequence of buttons, filling a form), send them in one `batch` call: it runs them in order and \
+    stops at the first failure. That saves a model round trip per action.
     3. Check every action's `verified` field. `true` means Accessibility read the result back; \
     `false` means it did not take effect; `null` means it cannot be read back, so take a screenshot \
     before relying on it.
@@ -138,16 +141,20 @@ public enum SessionTools {
         case .click:
             return ToolDefinition(
                 name: name,
-                summary: "Click the element at a point, using Accessibility.",
-                usage: "Left click presses buttons, links, menu items, sidebar rows and other controls that support AXPress, and focuses text fields so type_text and press_key go to them. `button: right` opens the element's context menu; it appears after about a second, at the element's caret rather than the point, so wait before the screenshot. Close it with press_key escape. `double: true` works only on elements that advertise AXOpen. The helper checks the element at the point and up to five containers for a matching action.",
+                summary: "Click an element, using Accessibility.",
+                usage: "Target it either by point (`x`, `y`) or by name (`bundle_id` plus `element`, the name list_elements shows, such as \"7\" or \"Equals\"); naming avoids coordinate mistakes. Left click presses buttons, links, menu items, sidebar rows and other controls that support AXPress, and focuses text fields so type_text and press_key go to them. `button: right` opens the element's context menu; it appears after about a second, at the element's caret rather than the point, so wait before the screenshot. Close it with press_key escape. `double: true` works only on elements that advertise AXOpen. The helper checks the element at the point and up to five containers for a matching action.",
                 parameters: [
-                    pointX, pointY,
+                    ToolParameter("x", .number, "Horizontal position in screen points. Give x and y, or bundle_id and element.", required: false, minimum: 0),
+                    ToolParameter("y", .number, "Vertical position in screen points.", required: false, minimum: 0),
+                    ToolParameter("bundle_id", .string, "App that owns the element, when clicking by name.", required: false),
+                    ToolParameter("element", .string, "Element name exactly as list_elements shows it (title or label), when clicking by name.", required: false),
                     ToolParameter("button", .string, "Mouse button.", required: false, allowed: ["left", "right"], defaultValue: "left"),
                     ToolParameter("double", .boolean, "Double click (left button only).", required: false, defaultValue: false),
                 ],
                 returns: "`method` (axPress, axFocus, axShowMenu or axOpen), the `target` element, `verified` (true when a focus was confirmed, otherwise null) and `next`.",
-                failures: ["`unsupported`: nothing there accepts this click; the message lists what was found. Pick another element from list_elements, or reach the control with the keyboard (press_key).",
-                           staleTarget, needsAccessibility, mayHaveRun],
+                failures: ["`unsupported`: nothing there accepts this click, or several elements share that name; the message says which. Pick another element from list_elements, click by point, or reach the control with the keyboard (press_key).",
+                           "`not_found`: nothing at that point, or no on-screen element with that name (the message lists similar names).",
+                           needsAccessibility, mayHaveRun],
                 isReadOnly: false)
         case .typeText:
             return ToolDefinition(
@@ -196,7 +203,37 @@ public enum SessionTools {
                 failures: ["`unsupported`: nothing under the point has a scroll bar on that axis, or it cannot be set. Point at the scrolling content itself, or use press_key pagedown.",
                            staleTarget, needsAccessibility, mayHaveRun],
                 isReadOnly: false)
+        case .batch:
+            return ToolDefinition(
+                name: name,
+                summary: "Run several actions in order with one call.",
+                usage: "Use it for steps that do not need a look at the screen in between, such as pressing a known sequence of buttons or filling several fields. Each action names its `tool` (click, type_text, set_text, press_key, scroll_to or open_app) and that tool's arguments as sibling fields, for example {\"tool\": \"click\", \"bundle_id\": \"com.apple.calculator\", \"element\": \"7\"}. All actions are checked before any runs. They run in order and stop at the first failure or at a `verified: false` result. Take a screenshot afterwards to confirm the final state.",
+                parameters: [ToolParameter("actions", .array, "The actions, in order.", minimum: 1, maximum: Double(batchLimit), items: batchItemSchema)],
+                returns: "`completed` and `total` counts and `results`: one compact entry per action that ran (tool, ok, method, verified, target or error).",
+                failures: ["`invalid_arguments`: an action is malformed; nothing ran. The message names the action.",
+                           "Any other error: the batch stopped at that action. `completed` says how many ran before it; fix that action and send the rest.",
+                           mayHaveRun],
+                isReadOnly: false)
         }
+    }
+
+    /// Tools allowed inside `batch`: actions only. Observation tools would lose their output.
+    static let batchable: [SessionToolName] = [.click, .typeText, .setText, .pressKey, .scrollTo, .openApp]
+    static let batchLimit = 25
+
+    /// One batch action: `tool` plus the union of the batchable tools' arguments, flattened so
+    /// every provider's schema subset accepts it.
+    private static var batchItemSchema: JSONValue {
+        var properties: [String: JSONValue] = ["tool": ["type": "string", "enum": .array(batchable.map { .string($0.rawValue) }),
+                                                        "description": "The tool to run."]]
+        for tool in batchable {
+            for parameter in makeDefinition(tool).parameters where properties[parameter.name] == nil {
+                var schema = parameter.schema
+                if case .object(var object) = schema { object["description"] = .string("Argument for the tools that take it: \(parameter.description)"); schema = .object(object) }
+                properties[parameter.name] = schema
+            }
+        }
+        return ["type": "object", "required": ["tool"], "additionalProperties": false, "properties": .object(properties)]
     }
 
     // MARK: - Reference document
