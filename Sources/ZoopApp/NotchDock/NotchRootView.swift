@@ -14,6 +14,8 @@ struct NotchMetrics: Equatable {
     static let expandedFlare: CGFloat = 10
     static let contentInset: CGFloat = 28
     static let maxMainHeight: CGFloat = 520
+    static let completionWidth: CGFloat = 340
+    static let completionHeight: CGFloat = 84
 
     var expandedWidth: CGFloat { min(820, screenFrame.width - 32) }
     /// Each wing beside the camera is narrow when idle and widens when status text and the orb need room.
@@ -67,11 +69,26 @@ struct NotchRootView: View {
             }
         }
         .frame(width: metrics.windowSize.width, height: metrics.windowSize.height, alignment: .top)
+        .overlay(alignment: .top) {
+            if let task = store.completionAlert {
+                completionCard(task)
+                    .frame(width: min(NotchMetrics.completionWidth, metrics.expandedWidth), height: NotchMetrics.completionHeight)
+                    .offset(x: -(width - min(NotchMetrics.completionWidth, metrics.expandedWidth)) / 2 + (expanded ? NotchMetrics.contentInset : 0),
+                            y: metrics.hardwareHeight + (expanded ? 56 : 10))
+                    .id(task.id)
+                    .transition(reduceMotion ? .opacity : .offset(y: -12).combined(with: .opacity))
+            }
+        }
         .animation(morph, value: store.isExpanded)
         .animation(morph, value: store.destination)
         .animation(morph, value: store.notchBusy)
+        .animation(morph, value: store.completionAlert?.id)
         .preferredColorScheme(.dark)
-        .onChange(of: store.isExpanded) { onStateChange() }
+        .onChange(of: store.isExpanded) {
+            if store.isExpanded { store.recordInteraction(); store.dismissCompletionAlerts() }
+            onStateChange()
+        }
+        .onChange(of: store.completionAlert?.id) { onStateChange() }
         .onChange(of: store.destination) { onStateChange() }
         .onChange(of: store.notchBusy) { onStateChange() }
         .onChange(of: store.liveTasks.count) { old, new in
@@ -104,6 +121,22 @@ struct NotchRootView: View {
             } else {
                 Button { store.isExpanded = true } label: {
                     HStack(spacing: 0) {
+                        if store.workingTaskCount > 0 {
+                            HStack(spacing: 4) {
+                                Text("\(store.workingTaskCount)")
+                                    .font(.system(size: 10, weight: .semibold)).monospacedDigit()
+                                    .foregroundStyle(Color(red: 0.84, green: 0.97, blue: 0.66))
+                                    .contentTransition(.numericText())
+                                Text("working").font(.system(size: 9)).foregroundStyle(Color(red: 0.75, green: 0.8, blue: 0.71))
+                            }
+                            .padding(.horizontal, 7).frame(height: 20)
+                            .background(LinearGradient(colors: [ZoopTheme.lime.opacity(0.07), ZoopTheme.lime.opacity(0.025)], startPoint: .topLeading, endPoint: .bottomTrailing), in: Capsule())
+                            .overlay(Capsule().strokeBorder(ZoopTheme.lime.opacity(0.13), lineWidth: 1))
+                            .padding(.leading, NotchMetrics.collapsedFlare + 44)
+                            .animation(reduceMotion ? .none : .easeOut(duration: 0.18), value: store.workingTaskCount)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(store.workingTaskCount) \(store.workingTaskCount == 1 ? "task" : "tasks") working")
+                        }
                         Spacer(minLength: 0)
                         NotchStatus(label: store.compactStatus, active: store.workingTask != nil || store.mood == .thinking, compact: true)
                             .fixedSize()
@@ -201,6 +234,42 @@ struct NotchRootView: View {
             Button { store.toggleSound() } label: { Image(systemName: store.soundEnabled ? "speaker.wave.2" : "speaker.slash").font(.system(size: 11)) }.accessibilityLabel(store.soundEnabled ? "Mute sounds" : "Enable sounds")
             Button { store.reset() } label: { Image(systemName: "arrow.counterclockwise").font(.system(size: 10)) }.accessibilityLabel("Reset demo")
         }.buttonStyle(.plain).foregroundStyle(ZoopTheme.secondary).padding(.horizontal, 20 + NotchMetrics.expandedFlare)
+    }
+
+    private func completionCard(_ task: CompanionTask) -> some View {
+        HStack(spacing: 0) {
+            Button { store.openCompletedTask(task.id) } label: {
+                HStack(spacing: 11) {
+                    Image(systemName: "checkmark").font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(ZoopTheme.lime).frame(width: 33, height: 33)
+                        .background(ZoopTheme.lime.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(ZoopTheme.lime.opacity(0.16), lineWidth: 1))
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(spacing: 12) {
+                            Text("A LITTLE WIN").foregroundStyle(ZoopTheme.lime)
+                            Text("JUST FINISHED").foregroundStyle(ZoopTheme.secondary)
+                        }.font(.system(size: 7, design: .monospaced)).tracking(0.8)
+                        Text(task.title).font(.system(size: 12, weight: .medium)).foregroundStyle(ZoopTheme.text).lineLimit(1)
+                        HStack(spacing: 4) {
+                            Text(store.completionQueue.count > 1 ? "Your report is ready · +\(store.completionQueue.count - 1) more ready" : "Your report is ready. Take a look")
+                            Image(systemName: "arrow.up.right")
+                        }.font(.system(size: 9)).foregroundStyle(ZoopTheme.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }.padding(.leading, 14).frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("View completed task: \(task.title)")
+            Button { store.dismissCurrentCompletion() } label: {
+                Image(systemName: "xmark").font(.system(size: 9)).foregroundStyle(ZoopTheme.secondary).frame(width: 28, height: 32)
+            }.buttonStyle(.plain).accessibilityLabel("Dismiss task notification").frame(maxHeight: .infinity, alignment: .top).padding(.top, 4)
+        }
+        .background(.black.opacity(0.92), in: RoundedRectangle(cornerRadius: 16))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .overlay(alignment: .topLeading) {
+            Rectangle().fill(.black.opacity(0.92)).frame(width: 8, height: 8)
+                .rotationEffect(.degrees(45)).offset(x: 32, y: -4).allowsHitTesting(false)
+        }
+        .shadow(color: .black.opacity(0.4), radius: 18, y: 10)
     }
 
     private func dispatch(_ id: UUID) {

@@ -19,7 +19,7 @@ struct ZoopMascot: View {
             Canvas { graphics, canvasSize in
                 let context = graphics
                 let unit = canvasSize.width / 16
-                let breath = mood == .sleeping ? sin(time * 1.5) * 0.2 : mood == .cooking ? sin(time * 7) * 0.35 : sin(time * 2) * 0.15
+                let breath = mood == .done ? -abs(sin(time * 10)) * 0.9 : mood == .sleeping ? sin(time * 1.5) * 0.2 : mood == .cooking ? sin(time * 7) * 0.35 : sin(time * 2) * 0.15
                 func pixel(_ x: Double, _ y: Double, _ width: Double = 1, _ height: Double = 1, _ color: Color = ZoopTheme.lime) {
                     let rect = CGRect(x: CGFloat(x) * unit, y: CGFloat(y + breath) * unit, width: CGFloat(width) * unit, height: CGFloat(height) * unit)
                     context.fill(Path(rect), with: .color(color), style: FillStyle(antialiased: false))
@@ -36,6 +36,13 @@ struct ZoopMascot: View {
                     let z = ZoopTheme.lime.opacity(0.35 + drift * 0.4)
                     pixel(13, -drift, 3, 1, z); pixel(15, 1 - drift, 1, 1, z)
                     pixel(14, 2 - drift, 1, 1, z); pixel(13, 3 - drift, 3, 1, z)
+                } else if mood == .done {
+                    for x in [3.0, 9.0] {
+                        pixel(x, 7, 1, 1, ink); pixel(x + 1, 6, 2, 1, ink); pixel(x + 3, 7, 1, 1, ink)
+                    }
+                    let sparkle = Color(red: 0.89, green: 1, blue: 0.68)
+                    pixel(0, 3, 3, 1, sparkle); pixel(1, 2, 1, 3, sparkle)
+                    pixel(13, 11, 3, 1, sparkle); pixel(14, 10, 1, 3, sparkle)
                 } else {
                     let glance = mood == .thinking ? (sin(time * 2) > 0 ? 0.5 : -0.5) : 0
                     let blink = mood == .idle && time.truncatingRemainder(dividingBy: 4.5) > 4.3

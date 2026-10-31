@@ -25,7 +25,8 @@ The script makes a release build and applies an ad-hoc signature for local use. 
 
 ## Interactions
 
-- Idle and completed states say **idling**. The pixel mascot has closed eyes, a gentle breathing animation, and a floating pixel Z. The busy orb is absent.
+- Idle states say **idling**. The pixel mascot has closed eyes, a gentle breathing animation, and a floating pixel Z. The busy orb is absent. While tasks execute, a small **N working** count beside the mascot includes running and dispatching work, excluding paused tasks.
+- A task that finishes while Zoop is collapsed, or after 15 seconds without interaction, pops a small task-specific card from beneath the mascot. The supplied ElevenLabs voice plays once while the mascot bounces with happy eyes and sparkles. The card stays for seven seconds; clicking it opens that task’s report. Multiple completions queue without overlapping audio. Opening Zoop, reset, and shutdown clear pending alerts. Muting preserves the visual alert, and restored completed history never triggers a fresh voice or notification. Background alerts do not activate the app or take keyboard focus.
 - While preparing or executing work, a single consistent searching globe appears beside changing status words. Word changes use a scoped blur, fade, and spring transition.
 - The glass surface changes dimensions independently of the conversation. Text is never scaled with the drawer.
 - Opening chat, including reopening an existing conversation, starts at the latest message. Scrolling upward lets you read history without streaming constantly pulling you downward.
@@ -49,7 +50,8 @@ Reduced Motion disables mascot motion and orb animation, and simplifies word and
 | `Sources/ZoopApp/Chat` | Conversation, progressive plan, confirmation, input, scroll behavior |
 | `Sources/ZoopApp/Preview` | Simulated browser, comparison table, autonomous ghost pointer |
 | `Sources/ZoopApp/State` | Observable UI state, streaming, task lifecycle, persistence |
-| `Sources/ZoopApp/Notifications` | Audio synthesis and file exports |
+| `Sources/ZoopApp/Notifications` | Approval chime, completion voice playback, and file exports |
+| `Sources/ZoopApp/Resources` | Bundled completion MP3 from the supplied ElevenLabs recording |
 | `Sources/ZoopShared/Tasks` | Foundation-only Codable/Sendable messages, tasks, snapshots, and task transitions |
 | `Sources/ZoopAgents/Facade` | Provider boundary and local demo service |
 | `Sources/ZoopAgents/Agents/Chat` | Sample scenarios and Markdown report generation |
@@ -76,7 +78,7 @@ Manual Mac checks:
 2. Expand, type, close by clicking another app, and reopen. Confirm the draft and latest chat remain visible.
 3. Approve a plan, close during the ticket flight, and verify the task still appears in Live Activities.
 4. Run two tasks. Pause one, stop one, and verify neither advances while paused/stopped. Resume a task restored after relaunch.
-5. Let a task complete. Confirm its tab retires, the counter decreases, the mascot sleeps, and the report is present in Finder.
+5. Close Zoop while a task runs. Confirm the working count excludes paused work. At completion, confirm its tab retires, the voice plays once, the mascot celebrates during playback, a card names the task, and the report is present in Finder. Click the card to open that specific report. Repeat with concurrent completions, mute, reset, relaunch, and while actively interacting in the drawer.
 6. Verify normal typing, clicking, app switching, Spaces, and full-screen behavior while a task runs.
 7. Test Reduced Motion, VoiceOver labels, sound toggling, and a save location that is not writable.
 

@@ -2,9 +2,47 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class CompanionAudio {
+final class CompanionAudio: NSObject, AVAudioPlayerDelegate {
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
+    private var voice: AVAudioPlayer?
+    private var voicePlaybackChanged: ((Bool) -> Void)?
+    var isSpeaking: Bool { voice?.isPlaying == true }
+
+    @discardableResult
+    func completion(onPlaybackChanged: @escaping (Bool) -> Void) -> TimeInterval {
+        // The app bundle has a direct copy; `swift run` uses the SwiftPM resource bundle.
+        guard let url = Bundle.main.url(forResource: "completion", withExtension: "mp3")
+                ?? Bundle.module.url(forResource: "completion", withExtension: "mp3"),
+              let clip = try? AVAudioPlayer(contentsOf: url) else { return 1.8 }
+        stopVoice()
+        voice = clip
+        voicePlaybackChanged = onPlaybackChanged
+        clip.delegate = self
+        clip.prepareToPlay()
+        if clip.play() { voicePlaybackChanged?(true) }
+        return clip.duration
+    }
+
+    func stopVoice() {
+        voice?.stop(); voice = nil
+        voicePlaybackChanged?(false); voicePlaybackChanged = nil
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        finishVoice(ObjectIdentifier(player))
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: (any Error)?) {
+        finishVoice(ObjectIdentifier(player))
+    }
+
+    private nonisolated func finishVoice(_ identity: ObjectIdentifier) {
+        Task { @MainActor [weak self] in
+            guard let self, let voice = self.voice, ObjectIdentifier(voice) == identity else { return }
+            self.stopVoice()
+        }
+    }
 
     func chime() {
         let sampleRate = 44_100.0
@@ -35,5 +73,5 @@ final class CompanionAudio {
         player?.play()
     }
 
-    func stop() { player?.stop(); engine?.stop() }
+    func stop() { stopVoice(); player?.stop(); engine?.stop() }
 }

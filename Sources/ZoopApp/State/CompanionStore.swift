@@ -18,6 +18,10 @@ final class CompanionStore {
     var selectedTaskID: UUID?
     var focusRequest = 0
     var notice: String?
+    private(set) var completionQueue: [CompanionTask] = []
+    private(set) var isCelebrating = false
+    @ObservationIgnored private var lastInteraction = Date()
+    @ObservationIgnored private var completionPresentation: Task<Void, Never>?
 
     @ObservationIgnored private let service: any CompanionService
     @ObservationIgnored private let persistence: CompanionPersistence
@@ -43,8 +47,10 @@ final class CompanionStore {
     var liveTasks: [CompanionTask] { tasks.filter { $0.phase.isLive } }
     var activityTabs: [CompanionTask] { tasks.filter { $0.phase.isLive || recentlyCompleted.contains($0.id) } }
     var workingTask: CompanionTask? { tasks.first { $0.phase == .running || $0.phase == .dispatching } }
+    var workingTaskCount: Int { tasks.filter { $0.phase == .running || $0.phase == .dispatching }.count }
+    var completionAlert: CompanionTask? { completionQueue.first }
     var isResponding: Bool { isThinking || !streamPositions.isEmpty }
-    var mood: CompanionMood { workingTask != nil ? .cooking : isThinking || !chatStreams.isEmpty ? .thinking : .sleeping }
+    var mood: CompanionMood { isCelebrating ? .done : workingTask != nil ? .cooking : isThinking || !chatStreams.isEmpty ? .thinking : .sleeping }
     var compactStatus: String {
         if let task = workingTask { return task.progress < 28 ? "searching" : "cooking" }
         if isThinking { return "thinking" }
@@ -63,7 +69,46 @@ final class CompanionStore {
     func task(_ id: UUID?) -> CompanionTask? { tasks.first { $0.id == id } }
     func openChat() { destination = .chat; isExpanded = true; focusRequest += 1 }
     func toggle() { isExpanded.toggle() }
-    func toggleSound() { soundEnabled.toggle(); persist() }
+    func toggleSound() { soundEnabled.toggle(); if !soundEnabled { audio.stopVoice() }; persist() }
+    func recordInteraction() { lastInteraction = Date() }
+
+    func openCompletedTask(_ id: UUID) {
+        selectedTaskID = id; destination = .activities; isExpanded = true
+        dismissCompletionAlerts()
+    }
+
+    func dismissCompletionAlerts() {
+        completionPresentation?.cancel(); completionPresentation = nil
+        completionQueue = []; isCelebrating = false; audio.stopVoice()
+    }
+
+    func dismissCurrentCompletion() {
+        completionPresentation?.cancel(); completionPresentation = nil
+        audio.stopVoice(); isCelebrating = false
+        if !completionQueue.isEmpty { completionQueue.removeFirst() }
+        presentNextCompletion()
+    }
+
+    private func presentNextCompletion() {
+        guard completionPresentation == nil, !completionQueue.isEmpty else { return }
+        isCelebrating = true
+        let duration = soundEnabled ? audio.completion { [weak self] playing in
+            self?.isCelebrating = playing
+        } : 1.8
+        // Starting a new voice first stops the previous one; keep the silent fallback cheerful too.
+        isCelebrating = true
+        completionPresentation = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(duration))
+                guard let self else { return }
+                if !self.audio.isSpeaking { self.isCelebrating = false }
+                try await Task.sleep(for: .seconds(max(0, 7 - duration)))
+                self.completionPresentation = nil
+                if !self.completionQueue.isEmpty { self.completionQueue.removeFirst() }
+                self.presentNextCompletion()
+            } catch { /* Opening, dismissal, reset, and shutdown cancel the alert. */ }
+        }
+    }
 
     func send(_ request: String? = nil) {
         let text = (request ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -205,7 +250,10 @@ final class CompanionStore {
             notice = "Automatic export failed. Use Save report to choose a folder."
         }
         stream(.init(role: .assistant, text: text), wake: false)
-        if soundEnabled { audio.chime() }
+        if !isExpanded || Date().timeIntervalSince(lastInteraction) >= 15 {
+            completionQueue.append(task)
+            presentNextCompletion()
+        }
         retirements[task.id] = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(600))
@@ -236,6 +284,7 @@ final class CompanionStore {
     func shutdown() { cancelWork(); persist(); audio.stop() }
 
     private func cancelWork() {
+        dismissCompletionAlerts()
         generation += 1
         planning?.cancel(); planning = nil
         for task in Array(streams.values) + Array(executions.values) + Array(dispatches.values) + Array(retirements.values) { task.cancel() }

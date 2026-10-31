@@ -14,7 +14,7 @@ let package = Package(
         // Shared models and the persistent session bridge's wire protocol.
         .target(name: "ZoopShared"),
         .target(name: "ZoopAgents", dependencies: ["ZoopShared"]),
-        .executableTarget(name: "ZoopApp", dependencies: ["ZoopShared", "ZoopAgents"]),
+        .executableTarget(name: "ZoopApp", dependencies: ["ZoopShared", "ZoopAgents"], resources: [.process("Resources")]),
         // The helper stays isolated from AI orchestration and the main-session UI.
         .executableTarget(name: "ZoopHelper", dependencies: ["ZoopShared"]),
         .executableTarget(name: "ZoopBridgeCLI", dependencies: ["ZoopShared"]),

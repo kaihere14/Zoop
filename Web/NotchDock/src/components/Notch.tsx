@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "framer-motion";
-import { Activity, ArrowUpRight, Check, ChevronUp, FileText, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import { Activity, ArrowUpRight, Check, ChevronUp, FileText, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
 import ChatView from "./ChatView";
 import LiveActivitiesView from "./LiveActivitiesView";
 import ZoopMascot from "./ZoopMascot";
 import NotchStatus from "./NotchStatus";
+import useCompletionAlerts from "./useCompletionAlerts";
 import { chime, makePlan, type Message, type Mood, type Task } from "@/lib/demo";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 28, mass: .8 };
@@ -25,7 +26,7 @@ export default function Notch({ open, setOpen, onTasksChange }: Props) {
   const [flights, setFlights] = useState<Flight[]>([]);
   const [pulse, setPulse] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
-  const [toast, setToast] = useState<Task | null>(null);
+  const alerts = useCompletionAlerts(tasks, ready, open, sound);
   const liveButton = useRef<HTMLButtonElement>(null);
   const notch = useRef<HTMLDivElement>(null);
   const replyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -83,7 +84,7 @@ export default function Notch({ open, setOpen, onTasksChange }: Props) {
   const running = tasks.filter(t => t.status === "running" || t.status === "dispatching");
   const hasRunning = running.some(t => t.status === "running");
   const count = tasks.filter(t => t.status === "running" || t.status === "paused").length;
-  const mood: Mood = running.length ? "cooking" : thinking || streamingReply ? "thinking" : "sleeping";
+  const mood: Mood = alerts.celebrating ? "done" : running.length ? "cooking" : thinking || streamingReply ? "thinking" : "sleeping";
   const status = running.length ? `${running[0].progress < 28 ? "searching" : "cooking"}: ${running[0].domain.split("/")[0].split(" · ")[0]}` : thinking ? "thinking…" : streamingReply ? "putting it into words…" : count ? "taking a breather" : "idling";
   const compactStatus = running.length ? running[0].progress < 28 ? "searching" : "cooking" : thinking ? "thinking" : streamingReply ? "writing" : count ? "paused" : "idling";
   const orbActive = Boolean(running.length || thinking || streamingReply);
@@ -112,10 +113,7 @@ export default function Notch({ open, setOpen, onTasksChange }: Props) {
     const unannounced = tasks.filter(t => t.status === "complete" && !messages.some(m => m.id === `done-${t.id}`));
     if (!unannounced.length) return;
     unannounced.forEach(t => streamReply({ id: `done-${t.id}`, role: "assistant", text: `All done! I put your comparison together in ${t.file}. You can save the report from Live Activities or the exports folder on your desktop.` }));
-    setToast(unannounced[unannounced.length - 1]);
-    chime(sound);
-  }, [tasks, messages, sound, streamReply]);
-  useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(null), 6500); return () => clearTimeout(timer); }, [toast]);
+  }, [tasks, messages, streamReply]);
 
   function send(text: string) {
     if (sendLock.current || streaming) return;
@@ -156,16 +154,16 @@ export default function Notch({ open, setOpen, onTasksChange }: Props) {
   function control(id: string, action: "pause" | "resume" | "stop") {
     setTasks(previous => previous.map(t => t.id === id ? { ...t, status: action === "pause" ? "paused" : action === "resume" ? "running" : "cancelled" } : t));
   }
-  function viewTask(id: string) { setSelected(id); setView("activities"); setOpen(true); setToast(null); }
+  function viewTask(id: string) { setSelected(id); setView("activities"); setOpen(true); alerts.dismiss(); }
   function reset() {
     if (replyTimer.current) clearTimeout(replyTimer.current);
     streamTimers.current.forEach(clearInterval); streamTimers.current.clear();
-    setMessages([]); setTasks([]); setFlights([]); setThinking(false); setDraft(""); setToast(null); setSelected(null); setView("chat");
+    setMessages([]); setTasks([]); setFlights([]); setThinking(false); setDraft(""); alerts.reset(); setSelected(null); setView("chat");
     sendLock.current = false; dispatchLock.current.clear();
   }
 
   return <LayoutGroup id="zoop">
-    <div ref={notch} className="notch-anchor">
+    <div ref={notch} className={`notch-anchor ${alerts.active ? "has-completion" : ""}`} onPointerDownCapture={alerts.recordInteraction} onPointerMoveCapture={alerts.recordInteraction} onKeyDownCapture={alerts.recordInteraction} onWheelCapture={alerts.recordInteraction}>
       <div className="notch-frame" style={{ width: open ? "min(820px, 94vw)" : "min(376px, 94vw)", height: open ? `min(${view === "activities" ? 488 : 520}px, calc(100dvh - 100px))` : 34 }}>
         <motion.div aria-hidden="true" layout layoutId="notch-surface" className={`notch-surface ${open ? "is-expanded liquid-glass" : "is-collapsed"} ${running.length ? "is-working" : ""}`} style={{ borderBottomLeftRadius: open ? 28 : 18, borderBottomRightRadius: open ? 28 : 18 }} transition={spring}/>
           {open ? <motion.div key="expanded" className="drawer-content" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: .1 } }} transition={{ duration: .25, delay: .12 }}>
@@ -174,12 +172,20 @@ export default function Notch({ open, setOpen, onTasksChange }: Props) {
               <div className="header-actions"><motion.button ref={liveButton} key={pulse} className={`live-button ${view === "activities" ? "active" : ""}`} onClick={() => setView(view === "activities" ? "chat" : "activities")} animate={pulse && !reduced ? { scale: [1, 1.15, 1] } : { scale: 1 }} transition={{ duration: .4 }}><Activity size={13}/><span>Live Activities</span><span className={`activity-counter ${count ? "has-count" : ""}`}>{count}</span></motion.button><button className="minimize-button" onClick={() => setOpen(false)} aria-label="Minimize Zoop"><ChevronUp size={17}/></button></div>
             </header>
             <AnimatePresence mode="wait" initial={false}><motion.div className="drawer-view" key={view} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: .16 }}>{view === "chat" ? <ChatView messages={messages} tasks={tasks} thinking={thinking} streaming={streaming} draft={draft} onDraftChange={setDraft} onSend={send} onStart={start} onViewTask={viewTask}/> : <LiveActivitiesView tasks={tasks} selected={selected} onSelect={setSelected} onBack={() => setView("chat")} onControl={control}/>}</motion.div></AnimatePresence>
-          </motion.div> : <motion.button key="collapsed" className="collapsed-button" aria-label="Open Zoop" onClick={() => setOpen(true)} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .12, delay: .1 }}><motion.span layoutId="companion" transition={spring}><ZoopMascot size={30} mood={mood}/></motion.span><NotchStatus label={compactStatus} active={orbActive} compact/></motion.button>}
+          </motion.div> : <motion.button key="collapsed" className="collapsed-button" aria-label="Open Zoop" onClick={() => setOpen(true)} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .12, delay: .1 }}><span className="compact-companion"><motion.span layoutId="companion" transition={spring}><ZoopMascot size={30} mood={mood}/></motion.span><AnimatePresence>{running.length > 0 && <motion.span key="working-count" className="working-count" role="status" aria-label={`${running.length} ${running.length === 1 ? "task" : "tasks"} working`} initial={{ opacity: 0, scale: .8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: .8 }}><motion.span className="working-count-number" key={running.length} initial={reduced ? false : { opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .18 }}>{running.length}</motion.span><span>working</span></motion.span>}</AnimatePresence></span><NotchStatus label={compactStatus} active={orbActive} compact/></motion.button>}
       </div>
       <div className="hardware-notch" aria-hidden="true"><div className="camera-lens"/></div>
       <AnimatePresence>{open && <motion.div className="drawer-underbar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ delay: .2 }}><span>YOUR EXTRA PAIR OF HANDS</span><div><button onClick={() => setSound(v => !v)} aria-label={sound ? "Mute sounds" : "Enable sounds"} title={sound ? "Mute sounds" : "Enable sounds"}>{sound ? <Volume2 size={12}/> : <VolumeX size={12}/>}</button><button onClick={reset} aria-label="Reset demo" title="Reset demo"><RotateCcw size={11}/></button></div></motion.div>}</AnimatePresence>
+      <AnimatePresence mode="wait">{alerts.active && <motion.div key={alerts.active.id} className={`completion-toast liquid-glass ${alerts.speaking ? "is-speaking" : ""}`} role="status" aria-live="polite" aria-atomic="true" initial={reduced ? { opacity: 0 } : { y: -16, scale: .92, opacity: 0 }} animate={{ y: 0, scale: 1, opacity: 1 }} exit={{ y: -8, scale: .97, opacity: 0 }} transition={spring}>
+        <button data-zoop-trigger className="completion-open" onClick={() => viewTask(alerts.active!.id)} aria-label={`View completed task: ${alerts.active.title}`}>
+          <span className="toast-icon"><Check size={17}/></span>
+          <span className="completion-copy"><span className="completion-eyebrow">A LITTLE WIN <span>JUST FINISHED</span></span><strong>{alerts.active.title}</strong><span className="completion-detail">Your report is ready. Take a look <ArrowUpRight size={10}/></span></span>
+        </button>
+        <button className="completion-dismiss" onClick={alerts.dismissCurrent} aria-label="Dismiss task notification"><X size={12}/></button>
+        {alerts.pending > 1 && <span className="completion-queued">+{alerts.pending - 1} more ready</span>}
+        <motion.div className="completion-lifetime" initial={{ scaleX: 1 }} animate={{ scaleX: 0 }} transition={{ duration: 7, ease: "linear" }} aria-hidden="true"/>
+      </motion.div>}</AnimatePresence>
     </div>
     <AnimatePresence>{flights.map(flight => <motion.div key={flight.id} className="flying-ticket" style={{ left: flight.x, top: flight.y }} initial={{ x: 0, y: 0, scale: 1, rotate: -4, opacity: 1 }} animate={{ x: [0, (flight.endX - flight.x) * .35, flight.endX - flight.x], y: [0, Math.min(-70, flight.endY - flight.y - 45), flight.endY - flight.y], rotate: [-4, -14, 8], scale: [1, 1.08, .15], opacity: [1, 1, .1] }} transition={{ duration: reduced ? .05 : .8, times: [0, .48, 1], ease: [0.33, 0, .22, 1] }} onAnimationComplete={() => arrive(flight)}><FileText size={15}/><span>on my way</span><ArrowUpRight size={12}/></motion.div>)}</AnimatePresence>
-    <AnimatePresence>{toast && <motion.button data-zoop-trigger className="completion-toast liquid-glass" initial={{ x: 30, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 30, opacity: 0 }} onClick={() => viewTask(toast.id)}><span className="toast-icon"><Check size={18}/></span><span><strong>A little less on your plate.</strong><span>{toast.file} is ready.</span></span><ArrowUpRight size={16}/></motion.button>}</AnimatePresence>
   </LayoutGroup>;
 }

@@ -84,6 +84,16 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
         return CGRect(x: metrics.screenFrame.midX - size.width / 2, y: metrics.screenFrame.maxY - size.height, width: size.width, height: size.height)
     }
 
+    private var completionRect: CGRect? {
+        guard !store.isExpanded, store.completionAlert != nil else { return nil }
+        return CGRect(x: interactiveRect.minX, y: interactiveRect.minY - 10 - NotchMetrics.completionHeight,
+                      width: min(NotchMetrics.completionWidth, metrics.expandedWidth), height: NotchMetrics.completionHeight)
+    }
+
+    private func containsInteractivePoint(_ point: NSPoint) -> Bool {
+        interactiveRect.contains(point) || (completionRect?.contains(point) ?? false)
+    }
+
     private func stateChanged() {
         panel.permitsKey = store.isExpanded
         if store.isExpanded {
@@ -99,13 +109,14 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
     /// A transparent window still captures clicks over its whole frame, so we toggle
     /// `ignoresMouseEvents` as the pointer enters or leaves the island.
     private func updateMousePassThrough() {
-        let inside = interactiveRect.contains(NSEvent.mouseLocation)
+        let inside = containsInteractivePoint(NSEvent.mouseLocation)
         if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
     }
 
     private func mouseMoved() {
         updateMousePassThrough()
         let inside = interactiveRect.contains(NSEvent.mouseLocation)
+        if inside { store.recordInteraction() }
         guard !store.isExpanded else { return }
         if !inside {
             hoverArmed = true
@@ -134,13 +145,14 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseEvents) { [weak self] _ in
             Task { @MainActor [weak self] in self?.dismissOutside() }
         }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseEvents.union(.keyDown)) { [weak self] event in
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseEvents.union([.keyDown, .scrollWheel])) { [weak self] event in
             let isKey = event.type == .keyDown
             let code: UInt16 = isKey ? event.keyCode : 0
             let flags = event.modifierFlags
             let consumed = MainActor.assumeIsolated {
                 guard let self else { return false }
                 if isKey { return self.handleKey(code: code, flags: flags) }
+                if self.containsInteractivePoint(NSEvent.mouseLocation) { self.store.recordInteraction() }
                 self.dismissOutside()
                 return false
             }
@@ -151,12 +163,13 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
     private func dismissOutside() {
         guard store.isExpanded else { return }
         let point = NSEvent.mouseLocation
-        guard !interactiveRect.contains(point), !excludedScreenRects().contains(where: { $0.contains(point) }) else { return }
+        guard !containsInteractivePoint(point), !excludedScreenRects().contains(where: { $0.contains(point) }) else { return }
         store.isExpanded = false
     }
 
     private func handleKey(code: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
         guard panel.isKeyWindow else { return false }
+        store.recordInteraction()
         if code == 53 { store.isExpanded = false; return true }
         if code == 40, flags.contains(.command) { store.openChat(); return true }
         return false
