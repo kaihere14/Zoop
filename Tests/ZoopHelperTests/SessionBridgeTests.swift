@@ -143,8 +143,7 @@ func isFailed(_ state: HelperConnection.State) -> Bool { if case .failed = state
         let actions: [InputAction] = [
             .click(ClickAction(point: Point(x: 1, y: 2))), .type(text: "hello 🌍\n"),
             .setText(SetTextAction(text: "replacement")), .key(KeyCombo(key: "a", modifiers: [.command])),
-            .scroll(ScrollAction(point: Point(x: 3, y: 4), deltaY: 5)),
-            .scrollPage(PageScrollAction(point: Point(x: 439, y: 359), direction: .down, pages: 2)),
+            .scrollTo(ScrollToAction(point: Point(x: 439, y: 359), fraction: 0.5)),
         ]
         for action in actions {
             let report = try await connection.perform(action)
@@ -157,7 +156,7 @@ func isFailed(_ state: HelperConnection.State) -> Bool { if case .failed = state
     }
 
     @Test(arguments: [InputAction.click(ClickAction(point: Point(x: 10, y: 20))),
-                      .scrollPage(PageScrollAction(point: Point(x: 439, y: 359), direction: .down))])
+                      .scrollTo(ScrollToAction(point: Point(x: 439, y: 359), fraction: 0.5))])
     func neverReplaysInputAfterHelperRestart(_ action: InputAction) async throws {
         let path = temporarySocketPath()
         let recorder = ActionRecorder()
@@ -415,5 +414,91 @@ final class SilentHelper: @unchecked Sendable {
         open.forEach { $0.close() }
         close(listenFD)
         unlink(path)
+    }
+}
+
+// MARK: - Agent tool layer, end to end
+
+@Suite(.serialized) struct SessionToolboxTests {
+    @Test func toolsRunThroughTheBridgeAndReturnModelReadyResults() async throws {
+        let path = temporarySocketPath()
+        let recorder = ActionRecorder()
+        let server = try startServer(at: path, backend: FakeBackend(actionRecorder: recorder))
+        defer { server.stop() }
+        let connection = HelperConnection(configuration: testConfiguration(path))
+        let toolbox = SessionToolbox(connection: connection)
+
+        let status = await toolbox.call("session_status")
+        #expect(!status.isError)
+        #expect(status.content["permissions"]?["post_events"] == false)
+        #expect(status.content["next"]?.stringValue?.contains("Send input events") == true)
+
+        let shot = await toolbox.call("screenshot")
+        #expect(!shot.isError)
+        #expect(shot.image?.data == FakeBackend().png)
+        #expect(shot.content["points_per_pixel"] == 2)
+
+        let elements = await toolbox.call("list_elements", argumentsJSON: #"{"bundle_id": "test.app"}"#)
+        #expect(elements.content["elements"] == [#"AXButton "7" at (25, 40) actions: AXPress [test.app]"#])
+
+        let click = await toolbox.call("click", argumentsJSON: #"{"x": 25, "y": 40, "button": "right"}"#)
+        #expect(!click.isError)
+        #expect(click.content["method"] == "axPress")
+        #expect(click.content["verified"] == .null)
+        #expect(click.content["next"] == "Take a screenshot to confirm the effect.")
+
+        _ = await toolbox.call("type_text", arguments: ["text": "hi\n"])
+        _ = await toolbox.call("set_text", arguments: ["text": "exact", "x": 1, "y": 2])
+        _ = await toolbox.call("press_key", arguments: ["keys": "cmd+l"])
+        _ = await toolbox.call("scroll_to", arguments: ["x": 1, "y": 2, "position": 0.5, "horizontal": true])
+        #expect(await recorder.actions == [
+            .click(ClickAction(point: Point(x: 25, y: 40), button: .right, count: 1)),
+            .type(text: "hi\n"),
+            .setText(SetTextAction(text: "exact", point: Point(x: 1, y: 2))),
+            .key(KeyCombo(key: "l", modifiers: [.command])),
+            .scrollTo(ScrollToAction(point: Point(x: 1, y: 2), axis: .horizontal, fraction: 0.5)),
+        ])
+        await connection.disconnect()
+    }
+
+    @Test func invalidCallsNeverReachTheHelper() async throws {
+        let path = temporarySocketPath()
+        let recorder = ActionRecorder()
+        let server = try startServer(at: path, backend: FakeBackend(actionRecorder: recorder))
+        defer { server.stop() }
+        let connection = HelperConnection(configuration: testConfiguration(path))
+        let toolbox = SessionToolbox(connection: connection)
+        let calls: [(String, String)] = [
+            ("drag", "{}"), ("click", "not json"), ("click", #"{"x": 1}"#),
+            ("click", #"{"x": 1, "y": 2, "button": "right", "double": true}"#),
+            ("set_text", #"{"text": "a", "x": 1}"#), ("press_key", #"{"keys": "cmd+"}"#),
+        ]
+        for (name, arguments) in calls {
+            let result = await toolbox.call(name, argumentsJSON: arguments)
+            #expect(result.isError)
+            #expect(result.content["error"] == "invalid_arguments")
+        }
+        #expect(await recorder.actions.isEmpty)
+        await connection.disconnect()
+    }
+
+    @Test func helperFailuresBecomeStructuredErrors() async throws {
+        let path = temporarySocketPath()
+        let server = try startServer(at: path, backend: FakeBackend(captureFailure: HelperFailure(.permissionDenied, "Screen Recording is off")))
+        defer { server.stop() }
+        let connection = HelperConnection(configuration: testConfiguration(path))
+        let result = await SessionToolbox(connection: connection).call("screenshot")
+        #expect(result.isError)
+        #expect(result.content["error"] == "permission_denied")
+        #expect(result.content["retry"] == "no")
+        #expect(result.content["next"] == "Stop and tell the person: Screen Recording is off")
+        await connection.disconnect()
+    }
+
+    @Test func unreachableHelperReportsHelperUnavailable() async {
+        let connection = HelperConnection(configuration: testConfiguration(temporarySocketPath(), retries: 0))
+        let result = await SessionToolbox(connection: connection).call("session_status")
+        #expect(result.content["error"] == "helper_unavailable")
+        #expect(result.content["retry"] == "no")
     }
 }

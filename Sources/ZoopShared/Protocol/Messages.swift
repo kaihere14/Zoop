@@ -13,7 +13,10 @@ public enum ZoopProtocol {
     /// misunderstand each other. Both sides refuse to talk across a mismatch.
     /// v2: input actions, element queries, app launching, point size in capture metadata.
     /// v3: explicit AX page-scroll action and axScrollPage report method.
-    public static let version = 3
+    /// v4: scrollTo action (scroll bar AXValue write) and axScrollBarValue report method.
+    /// v5: removed actions that never worked in a background session (wheel scroll, AX page
+    ///     scroll, PID mouse fallback). Clicks are Accessibility-only.
+    public static let version = 5
 }
 
 // MARK: - Payload types
@@ -133,7 +136,7 @@ public enum HelperRequest: Codable, Sendable, Equatable {
     case elements(query: ElementQuery)
     /// Launch an app (or bring it forward) in the agent session.
     case openApp(bundleID: String)
-    /// Click, type, key combo, set text, wheel scroll or AX page scroll in the agent session.
+    /// Click, type, key combo, set text or scroll-to in the agent session.
     case input(action: InputAction)
 
     public var name: String {

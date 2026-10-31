@@ -19,8 +19,7 @@ import Testing
         .input(action: .type(text: "héllo 🌍\n\t")),
         .input(action: .setText(SetTextAction(text: "replacement", point: Point(x: 1, y: 2)))),
         .input(action: .key(KeyCombo(key: "a", modifiers: [.command]))),
-        .input(action: .scroll(ScrollAction(point: Point(x: 3, y: 4), deltaX: -1, deltaY: 3))),
-        .input(action: .scrollPage(PageScrollAction(point: Point(x: 439, y: 359), direction: .down, pages: 2))),
+        .input(action: .scrollTo(ScrollToAction(point: Point(x: 439, y: 359), axis: .horizontal, fraction: 0.5))),
     ])
     func requestsRoundTrip(_ request: HelperRequest) throws {
         let envelope = RequestEnvelope(id: 9, request: request)
@@ -39,7 +38,7 @@ import Testing
             ResponseEnvelope(id: 7, result: .action(report: ActionReport(action: "click", method: .axPress, pid: 42, axError: -25200, landed: nil, detail: "check screenshot"))),
             ResponseEnvelope(id: 8, result: .action(report: ActionReport(action: "setText", method: .axSetValue, landed: false, detail: "mismatch"))),
             ResponseEnvelope(id: 9, result: .action(report: ActionReport(action: "type", method: .pidKeys, landed: true, detail: "verified"))),
-            ResponseEnvelope(id: 10, result: .action(report: ActionReport(action: "scrollPage", method: .axScrollPage, axError: 0, landed: nil, detail: "check viewport"))),
+            ResponseEnvelope(id: 11, result: .action(report: ActionReport(action: "scrollTo", method: .axScrollBarValue, axError: 0, landed: true, detail: "0.0000 -> 0.5000"))),
             ResponseEnvelope(id: 0, failure: HelperFailure(.unauthorized, "nope")),
         ]
         for response in responses {
@@ -78,8 +77,7 @@ import Testing
         #expect(!HelperRequest.openApp(bundleID: "test.app").isReplayable)
         for action in [InputAction.click(ClickAction(point: Point(x: 1, y: 2))), .type(text: "x"),
                        .setText(SetTextAction(text: "x")), .key(KeyCombo(key: "return")),
-                       .scroll(ScrollAction(point: Point(x: 1, y: 2), deltaY: 1)),
-                       .scrollPage(PageScrollAction(point: Point(x: 1, y: 2), direction: .up))] {
+                       .scrollTo(ScrollToAction(point: Point(x: 1, y: 2), fraction: 1))] {
             #expect(!HelperRequest.input(action: action).isReplayable)
         }
     }

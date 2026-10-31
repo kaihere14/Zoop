@@ -105,35 +105,21 @@ public struct KeyCombo: Codable, Sendable, Equatable, CustomStringConvertible {
     }
 }
 
-public struct ScrollAction: Codable, Sendable, Equatable {
-    public var point: Point
-    /// Lines to scroll. Positive `deltaY` scrolls down (further into the page), positive
-    /// `deltaX` scrolls right.
-    public var deltaX: Int
-    public var deltaY: Int
-
-    public init(point: Point, deltaX: Int = 0, deltaY: Int) {
-        self.point = point
-        self.deltaX = deltaX
-        self.deltaY = deltaY
-    }
+public enum ScrollAxis: String, Codable, Sendable, CaseIterable {
+    case vertical, horizontal
 }
 
-public enum PageScrollDirection: String, Codable, Sendable, CaseIterable {
-    case up, down, left, right
-}
-
-/// Explicit AX page scrolling. This is separate from line-based wheel events.
-public struct PageScrollAction: Codable, Sendable, Equatable {
-    public static let maximumPages = 10
+/// Moves a scroll area to an absolute position by writing its scroll bar's AXValue.
+/// `fraction` 0 is the top (or left edge) and 1 is the bottom (or right edge).
+public struct ScrollToAction: Codable, Sendable, Equatable {
     public var point: Point
-    public var direction: PageScrollDirection
-    public var pages: Int
+    public var axis: ScrollAxis
+    public var fraction: Double
 
-    public init(point: Point, direction: PageScrollDirection, pages: Int = 1) {
+    public init(point: Point, axis: ScrollAxis = .vertical, fraction: Double) {
         self.point = point
-        self.direction = direction
-        self.pages = pages
+        self.axis = axis
+        self.fraction = fraction
     }
 }
 
@@ -143,8 +129,8 @@ public enum InputAction: Codable, Sendable, Equatable {
     case type(text: String)
     case setText(SetTextAction)
     case key(KeyCombo)
-    case scroll(ScrollAction)
-    case scrollPage(PageScrollAction)
+    /// Absolute scroll position through the scroll bar's AXValue.
+    case scrollTo(ScrollToAction)
 
     public var name: String {
         switch self {
@@ -153,8 +139,7 @@ public enum InputAction: Codable, Sendable, Equatable {
         case .type: "type"
         case .setText: "setText"
         case .key: "key"
-        case .scroll: "scroll"
-        case .scrollPage: "scrollPage"
+        case .scrollTo: "scrollTo"
         }
     }
 }
@@ -236,14 +221,10 @@ public enum ActionMethod: String, Codable, Sendable {
     case axFocus
     /// Accessibility value write (set-text).
     case axSetValue
-    /// Accessibility page-scroll action on the hit element or a supporting ancestor.
-    case axScrollPage
-    /// Mouse events sent only to the app that owns the window at the point.
-    case pidMouse
+    /// Accessibility value write on a scroll area's scroll bar (absolute position).
+    case axScrollBarValue
     /// Key events sent only to the focused app.
     case pidKeys
-    /// Scroll-wheel events sent only to the app that owns the window at the point.
-    case pidScroll
 }
 
 /// What an action did. `landed` is `nil` when the helper can't tell. The executor should

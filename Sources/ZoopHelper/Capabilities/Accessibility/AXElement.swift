@@ -37,18 +37,62 @@ struct AXElement {
         guard Float(point.x).isFinite, Float(point.y).isFinite else { throw HelperFailure(.badRequest, "coordinates must be finite") }
         let system = system()
         var element: AXUIElement?
-        let error = read { AXUIElementCopyElementAtPosition(system.raw, Float(point.x), Float(point.y), &element) }
+        var error = read { AXUIElementCopyElementAtPosition(system.raw, Float(point.x), Float(point.y), &element) }
+        // WebKit builds its accessibility tree lazily: until something walks the tree, hit
+        // testing web content fails with kAXErrorNotImplemented (seen in Safari after loading
+        // a page). Walk part of the tree of the app under the point once, then retry.
+        if error == .notImplemented || error == .cannotComplete, let pid = windowOwner(at: point) {
+            wake(pid)
+            element = nil
+            error = read { AXUIElementCopyElementAtPosition(system.raw, Float(point.x), Float(point.y), &element) }
+        }
         guard error == .success, let element else {
             throw HelperFailure(.notFound, "no accessibility element at \(point) (AXError \(error.rawValue))")
         }
         return AXElement(element)
     }
 
-    static func focused() throws -> AXElement {
-        guard let element = system().element(kAXFocusedUIElementAttribute) else {
-            throw HelperFailure(.notFound, "no focused accessibility element in the agent session; click a text field first")
+    /// The agent session's focused app: the system-wide AX answer when available,
+    /// otherwise the session's frontmost app.
+    static func focusedApp() -> AXElement? {
+        if let app = system().element(kAXFocusedApplicationAttribute) { return app }
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier, pid > 0 else { return nil }
+        return AXElement(AXUIElementCreateApplication(pid))
+    }
+
+    /// The system-wide focused element can be missing even when an app has a focused
+    /// element (observed in Safari after web navigation), so ask the focused app too.
+    /// The app owning the frontmost normal window that contains the point.
+    static func windowOwner(at point: Point) -> pid_t? {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        for window in windows {
+            guard (window[kCGWindowLayer as String] as? Int) == 0,
+                  (window[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let bounds = window[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: bounds),
+                  rect.contains(CGPoint(x: point.x, y: point.y)),
+                  let pid = window[kCGWindowOwnerPID as String] as? Int32, pid > 0 else { continue }
+            return pid
         }
-        return element
+        return nil
+    }
+
+    /// Reads part of an app's tree so lazily built accessibility (WebKit) comes alive.
+    /// Bounded by node count and time; read-only.
+    static func wake(_ pid: pid_t) {
+        var queue = [AXElement(AXUIElementCreateApplication(pid))]
+        var index = 0
+        let deadline = ContinuousClock.now + .seconds(2)
+        while index < queue.count, index < 300, ContinuousClock.now < deadline {
+            queue.append(contentsOf: queue[index].children.prefix(300 - queue.count))
+            index += 1
+        }
+    }
+
+    static func focused() throws -> AXElement {
+        if let element = system().element(kAXFocusedUIElementAttribute) { return element }
+        if let element = focusedApp()?.element(kAXFocusedUIElementAttribute) { return element }
+        throw HelperFailure(.notFound, "no focused accessibility element in the agent session; click a text field first")
     }
 
     func attribute(_ name: String) -> CFTypeRef? {
@@ -62,6 +106,10 @@ struct AXElement {
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }
         return nil
+    }
+
+    func number(_ name: String) -> Double? {
+        (attribute(name) as? NSNumber)?.doubleValue
     }
 
     func element(_ name: String) -> AXElement? {
@@ -108,9 +156,12 @@ struct AXElement {
                            app: NSRunningApplication(processIdentifier: pid)?.bundleIdentifier)
     }
 
-    var ancestors: [AXElement] {
+    var ancestors: [AXElement] { ancestors(limit: 6) }
+
+    /// This element followed by up to `limit - 1` parents.
+    func ancestors(limit: Int) -> [AXElement] {
         var result = [self]
-        while result.count < 6, let parent = result.last?.element(kAXParentAttribute),
+        while result.count < limit, let parent = result.last?.element(kAXParentAttribute),
               !result.contains(where: { CFEqual($0.raw, parent.raw) }) { result.append(parent) }
         return result
     }

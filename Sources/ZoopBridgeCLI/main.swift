@@ -21,13 +21,14 @@ commands:
   type TEXT           keystrokes to the focused app (quote TEXT as one argument)
   set-text TEXT [--at X Y]
   key COMBO           e.g. cmd+shift+l, return, tab, escape
-  scroll X Y --dy N [--dx N]  positive deltas scroll down/right
-  scroll-page X Y --direction up|down|left|right [--pages N]
-                      explicit AX page scroll; defaults to 1 page (maximum 10)
+  scroll-to X Y --fraction F [--horizontal]
+                      set the scroll bar position: 0 = top/left, 1 = bottom/right
+  tools [--markdown]  print the agent tool declarations (JSON) or the tool reference (Markdown)
+  call TOOL [JSON]    run an agent tool exactly as the agent layer does, e.g.
+                        call click '{"x": 319, "y": 650}'   (screenshot images go to --out)
   watch               stay connected and print every state change; press Enter to retry after a failure
 
 options:
-  --verify            check primary-session isolation around an action (keep hands still)
   --socket PATH       helper socket (default: \(ZoopPaths.helperSocket()))
   --retries N         retries after the first failed attempt (default: 3)
 """
@@ -40,16 +41,14 @@ struct Options {
     var outDirectory = "frames"
     var maxWidth: Int?
     var positional: [String] = []
-    var verify = false
     var all = false
     var limit = 300
     var right = false
     var double = false
     var at: Point?
-    var dy: Int?
-    var dx = 0
-    var pageDirection: PageScrollDirection?
-    var pages: Int?
+    var fraction: Double?
+    var horizontal = false
+    var markdown = false
 }
 
 func parse() -> Options {
@@ -79,20 +78,14 @@ func parse() -> Options {
         case "-n": options.count = integer(argument)
         case "--out": options.outDirectory = value(for: argument)
         case "--max-width": options.maxWidth = integer(argument)
-        case "--verify": options.verify = true
         case "--all": options.all = true
         case "--limit": options.limit = integer(argument)
         case "--right": options.right = true
         case "--double": options.double = true
         case "--at": options.at = Point(x: number(argument), y: number(argument))
-        case "--dy": options.dy = integer(argument)
-        case "--dx": options.dx = integer(argument)
-        case "--direction":
-            guard let direction = PageScrollDirection(rawValue: value(for: argument)) else {
-                fail("--direction must be up, down, left or right", code: 64)
-            }
-            options.pageDirection = direction
-        case "--pages": options.pages = integer(argument)
+        case "--fraction": options.fraction = number(argument)
+        case "--horizontal": options.horizontal = true
+        case "--markdown": options.markdown = true
         case "--": literal = true
         case "-h", "--help": print(usage); exit(0)
         default:
@@ -102,11 +95,11 @@ func parse() -> Options {
         }
     }
     guard options.retries >= 0, options.count > 0, (1...1000).contains(options.limit),
-          options.maxWidth.map({ $0 > 0 }) ?? true,
-          options.pages.map({ (1...PageScrollAction.maximumPages).contains($0) }) ?? true else { fail("numeric options are out of range", code: 64) }
-    if options.command != "scroll-page", options.pageDirection != nil || options.pages != nil {
-        fail("--direction and --pages require scroll-page", code: 64)
+          options.maxWidth.map({ $0 > 0 }) ?? true else { fail("numeric options are out of range", code: 64) }
+    if options.command != "scroll-to", options.fraction != nil || options.horizontal {
+        fail("--fraction and --horizontal require scroll-to", code: 64)
     }
+    if let fraction = options.fraction, !(0...1).contains(fraction) { fail("--fraction must be between 0 and 1", code: 64) }
     return options
 }
 
@@ -191,21 +184,23 @@ case "key":
     requireArguments(1)
     guard let combo = KeyCombo.parse(options.positional[0]) else { fail("invalid key combo", code: 64) }
     action = .key(combo)
-case "scroll":
+case "scroll-to":
     let point = pointArguments()
-    guard let dy = options.dy else { fail("scroll requires --dy", code: 64) }
-    action = .scroll(ScrollAction(point: point, deltaX: options.dx, deltaY: dy))
-case "scroll-page":
-    let point = pointArguments()
-    guard let direction = options.pageDirection else { fail("scroll-page requires --direction", code: 64) }
-    guard options.dy == nil, options.dx == 0 else { fail("scroll-page uses --direction and --pages instead of wheel deltas", code: 64) }
-    action = .scrollPage(PageScrollAction(point: point, direction: direction, pages: options.pages ?? 1))
+    guard let fraction = options.fraction else { fail("scroll-to requires --fraction", code: 64) }
+    action = .scrollTo(ScrollToAction(point: point, axis: options.horizontal ? .horizontal : .vertical, fraction: fraction))
+case "tools":
+    requireArguments(0)
+    if options.markdown { print(SessionTools.referenceMarkdown(), terminator: "") }
+    else { print(JSONValue.array(SessionTools.declarations).prettyJSONText) }
+    exit(0)
+case "call":
+    guard (1...2).contains(options.positional.count) else { fail("call needs TOOL and optional JSON arguments", code: 64) }
+    action = nil
 case "open", "elements": requireArguments(1); action = nil
 case "inspect": _ = pointArguments(); action = nil
 case "status", "ping", "info", "capture", "watch": requireArguments(0); action = nil
 default: fail("unknown command '\(options.command)'", code: 64)
 }
-if options.verify && action == nil && options.command != "open" { fail("--verify requires an input action or open", code: 64) }
 
 let connection = HelperConnection(configuration: .init(
     socketPath: options.socketPath,
@@ -216,15 +211,8 @@ let stateTask = Task {
     for await state in states { note(describe(state)) }
 }
 
-var verification: IsolationVerification?
-var verificationPassed = true
 var commandError: Error?
 do {
-    if options.verify {
-        let hello = try await connection.connect()
-        note("Measuring primary-session isolation; keep mouse and keyboard still until the report.")
-        verification = try IsolationVerification(helper: hello.session)
-    }
     if let action {
         try printJSON(await connection.perform(action))
     } else {
@@ -239,6 +227,17 @@ do {
         case "inspect": printElements(try await connection.inspect(at: pointArguments()))
         case "elements": printElements(try await connection.elements(ElementQuery(bundleID: options.positional[0], interactiveOnly: !options.all, limit: options.limit)))
         case "open": try printJSON(await connection.openApp(bundleID: options.positional[0]))
+        case "call":
+            let toolbox = SessionToolbox(connection: connection)
+            let result = await toolbox.call(options.positional[0], argumentsJSON: options.positional.count > 1 ? options.positional[1] : "")
+            print(result.content.prettyJSONText)
+            if let image = result.image {
+                try FileManager.default.createDirectory(atPath: options.outDirectory, withIntermediateDirectories: true)
+                let path = "\(options.outDirectory)/frame-\(Int(Date().timeIntervalSince1970 * 1000)).png"
+                try image.data.write(to: URL(fileURLWithPath: path))
+                note("image \(image.width)x\(image.height) saved \(path)")
+            }
+            if result.isError { await connection.disconnect(); stateTask.cancel(); exit(1) }
         case "capture":
             let frame = try await connection.capture(CaptureOptions(maxPixelWidth: options.maxWidth))
             try FileManager.default.createDirectory(atPath: options.outDirectory, withIntermediateDirectories: true)
@@ -260,12 +259,6 @@ do {
     }
 } catch { commandError = error }
 
-if let verification {
-    // Include events consumed just after the helper reply, including openApp activation.
-    try? await Task.sleep(for: .milliseconds(200))
-    verificationPassed = verification.finish()
-}
 await connection.disconnect()
 stateTask.cancel()
 if let commandError { report(commandError) }
-if !verificationPassed { fail("primary-session isolation verification failed") }

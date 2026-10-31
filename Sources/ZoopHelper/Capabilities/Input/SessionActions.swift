@@ -40,8 +40,7 @@ actor SessionActions {
         case .setText(let action): return try setText(action)
         case .type(let text): return try type(text)
         case .key(let combo): return try key(combo)
-        case .scroll(let scroll): return try scrollAt(scroll)
-        case .scrollPage(let scroll): return try scrollPageAt(scroll)
+        case .scrollTo(let scroll): return try scrollTo(scroll)
         }
     }
 
@@ -65,61 +64,39 @@ actor SessionActions {
         return element.set(kAXFocusedAttribute, kCFBooleanTrue)
     }
 
+    /// Accessibility-only. In a background session apps ignore PID-targeted mouse events
+    /// (tested in AppKit, WebKit and SwiftUI), so there is deliberately no event fallback:
+    /// an `unsupported` failure tells the agent to choose another approach.
     private func clickAt(_ click: ClickAction) throws -> ActionReport {
         guard (1...2).contains(click.count) else { throw HelperFailure(.badRequest, "click count must be 1 or 2") }
         guard click.point.x.isFinite, click.point.y.isFinite else { throw HelperFailure(.badRequest, "coordinates must be finite") }
-        var hit: AXElement?
-        if AXIsProcessTrusted() {
-            hit = try? AXElement.at(click.point)
-            for element in hit?.ancestors ?? [] {
-                let actions = element.actions
-                let action: String
-                let method: ActionMethod
-                if click.button == .right {
-                    action = kAXShowMenuAction; method = .axShowMenu
-                } else if click.count == 2 {
-                    action = "AXOpen"; method = .axOpen
-                } else {
-                    action = kAXPressAction; method = .axPress
-                }
-                if actions.contains(action) {
-                    // Capture the target first: pressing may close a menu or destroy the element.
-                    let info = element.info
-                    let error = element.perform(action)
-                    return ActionReport(action: InputAction.click(click).name, method: method, target: info,
-                                        pid: info.pid, app: info.app, axError: Int(error.rawValue),
-                                        detail: "\(action) attempted; check the next screenshot. No event fallback after an AX attempt.")
-                }
-                if click.button == .left, click.count == 1,
-                   [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(element.string(kAXRoleAttribute) ?? ""),
-                   element.isSettable(kAXFocusedAttribute) {
-                    let error = focus(element)
-                    let focused = element.attribute(kAXFocusedAttribute) as? Bool
-                    return report("click", .axFocus, element, error: error, landed: focused == true ? true : nil,
-                                  detail: "AX focus attempted; window main and app frontmost were requested best effort.")
-                }
+        try AXElement.requirePermission()
+        let hit = try AXElement.at(click.point)
+        let (action, method): (String, ActionMethod) =
+            click.button == .right ? (kAXShowMenuAction, .axShowMenu)
+            : click.count == 2 ? ("AXOpen", .axOpen)
+            : (kAXPressAction, .axPress)
+        let chain = hit.ancestors
+        for element in chain {
+            if element.actions.contains(action) {
+                // Capture the target first: pressing may close a menu or destroy the element.
+                let info = element.info
+                let error = element.perform(action)
+                return ActionReport(action: InputAction.click(click).name, method: method, target: info,
+                                    pid: info.pid, app: info.app, axError: Int(error.rawValue),
+                                    detail: "\(action) performed. AX success means the app accepted the request; confirm the effect in the next screenshot.")
+            }
+            if click.button == .left, click.count == 1,
+               [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(element.string(kAXRoleAttribute) ?? ""),
+               element.isSettable(kAXFocusedAttribute) {
+                let error = focus(element)
+                let focused = element.attribute(kAXFocusedAttribute) as? Bool
+                return report("click", .axFocus, element, error: error, landed: focused == true ? true : nil,
+                              detail: "Text element focused through Accessibility; type_text and press_key now go to it.")
             }
         }
-        try requirePostEvent()
-        let window = try WindowTarget.at(click.point, ownerPID: hit?.pid)
-        let source = CGEventSource(stateID: .privateState)
-        for index in 1...click.count {
-            let right = click.button == .right
-            guard let down = CGEvent(mouseEventSource: source, mouseType: right ? .rightMouseDown : .leftMouseDown,
-                                     mouseCursorPosition: click.point.cgPoint, mouseButton: right ? .right : .left),
-                  let up = CGEvent(mouseEventSource: source, mouseType: right ? .rightMouseUp : .leftMouseUp,
-                                   mouseCursorPosition: click.point.cgPoint, mouseButton: right ? .right : .left) else {
-                throw HelperFailure(.internalError, "could not create mouse events")
-            }
-            for event in [down, up] {
-                window.configure(event)
-                event.setIntegerValueField(.mouseEventClickState, value: Int64(index))
-                event.postToPid(window.pid)
-                usleep(10_000)
-            }
-        }
-        return ActionReport(action: InputAction.click(click).name, method: .pidMouse, target: hit?.info,
-                            pid: Int(window.pid), app: window.app, detail: "Mouse events sent to window \(window.number); delivery is unconfirmed.")
+        let found = chain.map { "\($0.string(kAXRoleAttribute) ?? "AXUnknown")[\($0.actions.joined(separator: ","))]" }.joined(separator: " < ")
+        throw HelperFailure(.unsupported, "nothing at \(click.point) or its ancestors supports \(action). Found: \(found)")
     }
 
     private func setText(_ action: SetTextAction) throws -> ActionReport {
@@ -187,79 +164,45 @@ actor SessionActions {
         guard let code = KeyMap.code(for: combo.key) else { throw HelperFailure(.unsupported, "unknown key '\(combo.key)'") }
         try AXElement.requirePermission()
         try requirePostEvent()
-        let element = try AXElement.focused()
+        // Shortcuts such as Cmd+L need only the app, not a focused element. When nothing
+        // reports focus, target the session's focused/frontmost app itself.
+        let focused = try? AXElement.focused()
+        guard let element = focused ?? AXElement.focusedApp() else {
+            throw HelperFailure(.notFound, "no focused element or frontmost app in the agent session")
+        }
         guard element.pid > 0 else { throw HelperFailure(.notFound, "focused element has no app pid") }
         try sendKey(code, pid: element.pid, flags: KeyMap.flags(combo.modifiers))
-        return report("key", .pidKeys, element, detail: "Posted \(combo) to the focused app; check the next screenshot.")
+        let target = focused == nil ? "the frontmost app (no focused element was reported)" : "the focused app"
+        return report("key", .pidKeys, element, detail: "Posted \(combo) to \(target); check the next screenshot.")
     }
 
-    private func scrollPageAt(_ scroll: PageScrollAction) throws -> ActionReport {
-        let plan = try AXPageScroll(scroll)
+    private func scrollTo(_ scroll: ScrollToAction) throws -> ActionReport {
+        let plan = try AXScrollBarPosition(scroll)
         try AXElement.requirePermission()
         let hit = try AXElement.at(scroll.point)
         let pid = hit.pid
         guard pid > 0 else { throw HelperFailure(.notFound, "accessibility target has no valid app pid") }
-        guard let element = hit.ancestors.first(where: { $0.pid == pid && $0.actions.contains(plan.actionName) }) else {
-            throw HelperFailure(.unsupported, "no element at \(scroll.point) or its nearby ancestors advertises \(plan.actionName)")
+        // Overlay scroll bars are usually hidden, so hit testing lands on the content. Find
+        // the nearest ancestor in the same app that owns a scroll bar for this axis.
+        // Web content nests deeply, so search further up than clicks do.
+        guard let bar = hit.ancestors(limit: AXScrollBarPosition.ancestorLimit).lazy.filter({ $0.pid == pid })
+                .compactMap({ $0.element(plan.scrollBarAttribute) }).first else {
+            throw HelperFailure(.unsupported, "no scroll area at \(scroll.point) or its nearby ancestors has a \(scroll.axis.rawValue) scroll bar")
         }
-        let info = element.info
-        let outcome = plan.run { element.perform(plan.actionName) }
-        return ActionReport(action: "scrollPage", method: .axScrollPage, target: info, pid: info.pid, app: info.app,
-                            axError: Int(outcome.error.rawValue),
-                            detail: "\(plan.actionName): \(outcome.attempted) attempt(s), \(outcome.accepted) accepted of \(scroll.pages) requested page(s). Check the next screenshot; accepted does not prove movement. No retry or event fallback.")
-    }
-
-    private func scrollAt(_ scroll: ScrollAction) throws -> ActionReport {
-        guard let dy = Int32(exactly: scroll.deltaY), let dx = Int32(exactly: scroll.deltaX),
-              dy != Int32.min, dx != Int32.min else { throw HelperFailure(.badRequest, "scroll deltas are out of range") }
-        try requirePostEvent()
-        let hit = AXIsProcessTrusted() ? try? AXElement.at(scroll.point) : nil
-        let window = try WindowTarget.at(scroll.point, ownerPID: hit?.pid)
-        guard let event = CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .privateState), units: .line,
-                                  wheelCount: 2, wheel1: -dy, wheel2: -dx, wheel3: 0) else {
-            throw HelperFailure(.internalError, "could not create scroll event")
+        guard bar.isSettable(kAXValueAttribute) else {
+            throw HelperFailure(.unsupported, "the \(scroll.axis.rawValue) scroll bar's AXValue is not writable")
         }
-        event.location = scroll.point.cgPoint
-        window.configure(event)
-        event.postToPid(window.pid)
-        return ActionReport(action: "scroll", method: .pidScroll, target: hit?.info, pid: Int(window.pid), app: window.app,
-                            detail: "Scroll sent to window \(window.number); delivery is unconfirmed.")
-    }
-}
-
-private extension Point { var cgPoint: CGPoint { CGPoint(x: x, y: y) } }
-
-struct WindowTarget {
-    let pid: pid_t
-    let number: Int
-    var app: String? { NSRunningApplication(processIdentifier: pid)?.bundleIdentifier }
-
-    static func at(_ point: Point, ownerPID: pid_t? = nil) throws -> WindowTarget {
-        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        return try select(at: point, windows: windows, ownerPID: ownerPID)
-    }
-
-    /// Window bounds include transparent/click-through regions (for example Notification
-    /// Center's screen-sized window). AX hit testing identifies the app actually at the
-    /// point. Constrain the window list to that owner while preserving its front-to-back
-    /// order. If the AX owner disappears, never redirect the event to another app.
-    static func select(at point: Point, windows: [[String: Any]], ownerPID: pid_t?) throws -> WindowTarget {
-        guard point.x.isFinite, point.y.isFinite else { throw HelperFailure(.badRequest, "coordinates must be finite") }
-        if let ownerPID, ownerPID <= 0 { throw HelperFailure(.notFound, "accessibility target has no valid app pid") }
-        for window in windows {
-            guard let bounds = window[kCGWindowBounds as String] as? NSDictionary,
-                  let rect = CGRect(dictionaryRepresentation: bounds), rect.contains(point.cgPoint),
-                  let pid = window[kCGWindowOwnerPID as String] as? Int32, pid > 0,
-                  ownerPID == nil || pid == ownerPID,
-                  let number = window[kCGWindowNumber as String] as? Int,
-                  (window[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { continue }
-            return WindowTarget(pid: pid, number: number)
+        let before = bar.number(kAXValueAttribute)
+        let error = bar.set(kAXValueAttribute, NSNumber(value: plan.fraction))
+        // The app applies the new position asynchronously. Poll inside the action gate.
+        var after: Double?
+        for _ in 0..<AXScrollBarPosition.readbackAttempts {
+            usleep(50_000)
+            after = bar.number(kAXValueAttribute)
+            if plan.landed(after: after) == true { break }
         }
-        let owner = ownerPID.map { " for AX target pid \($0)" } ?? ""
-        throw HelperFailure(.notFound, "no window at \(point)\(owner) in the agent session")
-    }
-    func configure(_ event: CGEvent) {
-        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(number))
-        event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(number))
+        func format(_ value: Double?) -> String { value.map { String(format: "%.4f", $0) } ?? "unavailable" }
+        return report("scrollTo", .axScrollBarValue, bar, error: error, landed: plan.landed(after: after),
+                      detail: "\(scroll.axis.rawValue.capitalized) scroll bar AXValue \(format(before)) -> requested \(format(plan.fraction)), read back \(format(after)). No retry or fallback.")
     }
 }

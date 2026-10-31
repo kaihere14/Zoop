@@ -6,7 +6,7 @@ Zoop is a native macOS AI companion. You give it a task in chat, and it does the
 
 Implemented so far: the **persistent session bridge**, covering `ZoopShared/Protocol`, `ZoopShared/Transport`, `ZoopHelper/Server`, and screen capture; and the approved **native SwiftUI/AppKit notch interface** in `Sources/ZoopApp`. See [the session bridge guide](Docs/SessionBridge.md) and [the native UI guide](Docs/NativeNotch.md).
 
-The helper also includes the **input spike**: AX-first clicks, PID-targeted typing/keys/wheel events, direct AX text writes, app launching, and explicit AX page scrolling. See [input findings](Docs/InputFindings.md) for tested behavior and pending cases. Protocol v3 requires rebuilding and reinstalling both bridge binaries together.
+The helper can also **act in the agent session**: Accessibility clicks, keystrokes and shortcuts, exact text writes, scrolling and app launching, all without touching your cursor or keyboard. The agent layer reaches these through ten tools in `ZoopShared/Tools`; [the agent tool reference](Docs/AgentTools.md) explains each tool, its results and how to recover from failures, and [input findings](Docs/InputFindings.md) summarizes what was tested. Protocol v5 requires rebuilding and reinstalling both bridge binaries together.
 
 The native UI includes streaming chat, task approval, live activities, a sleeping mascot, and sample report exports. Its execution provider currently uses demo data; connecting the interface to the session bridge and real automation remains separate work. The web reference remains in `Web/NotchDock`.
 
@@ -168,7 +168,8 @@ Scripts/bundle.sh                        # build/Zoop.app (ad-hoc signed for loc
 Scripts/bundle-helper.sh                 # build/ZoopHelper.app (signed) + build/zoop-bridge
 sudo Scripts/install-helper.sh sbagent   # install the helper as sbagent's LaunchAgent
 build/zoop-bridge status                 # talk to it from your own account
-build/zoop-bridge scroll-page 439 359 --direction down --verify  # AX page-scroll spike
+build/zoop-bridge tools --markdown       # agent tool reference (Docs/AgentTools.md)
+build/zoop-bridge call screenshot        # run an agent tool exactly as the agent does
 ```
 
 ## Configuration

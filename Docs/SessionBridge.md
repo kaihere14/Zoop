@@ -30,17 +30,18 @@ The session bridge connects the Zoop app, which runs as the main user, to ZoopHe
 | `Sources/ZoopHelper/Server/SystemBackend.swift` | Real session info, capture and input. Tests use a fake. |
 | `Sources/ZoopShared/Protocol/Input.swift` | Point coordinates, input actions, element/app facts and action reports. |
 | `Sources/ZoopHelper/Capabilities/Accessibility/AXElement.swift` | AX attributes, actions, hit testing, focused element and bounded tree walks. |
-| `Sources/ZoopHelper/Capabilities/Input/SessionActions.swift` | Serializes input and app launching across connections; AX first, PID events when needed. |
+| `Sources/ZoopHelper/Capabilities/Input/SessionActions.swift` | Serializes input and app launching across connections; AX clicks/text/scrolling, PID key events. |
+| `Sources/ZoopHelper/Capabilities/Input/AXScrollBarPosition.swift` | Validation and readback rules for `scrollTo`. |
 | `Sources/ZoopHelper/Capabilities/Input/KeyMap.swift` | ANSI virtual key codes and modifiers. |
 | `Sources/ZoopHelper/Capabilities/Apps/Apps.swift` | NSWorkspace app launching inside the agent session. |
-| `Sources/ZoopBridgeCLI/IsolationVerification.swift` | Primary-session cursor, frontmost app and input-counter measurements. |
+| `Sources/ZoopShared/Tools/` | Agent tool layer: catalog, operating guide, JSON Schemas and `SessionToolbox` executor. See [AgentTools.md](AgentTools.md). |
 | `Sources/ZoopBridgeCLI/main.swift` | `zoop-bridge` developer tool. |
 
-## Protocol v3
+## Protocol v5
 
-Build and reinstall the helper and client together: mismatched protocol versions refuse the handshake. Version 2 introduced `inspect`, `elements`, `openApp` and `input`, with element/app/action results and `notFound`/`unsupported` failures. Version 3 adds the explicit `scrollPage` input action and `axScrollPage` method. Input includes click, type, setText, key, line-wheel scroll and AX page scroll.
+Build and reinstall the helper and client together: mismatched protocol versions refuse the handshake. Version 2 introduced `inspect`, `elements`, `openApp` and `input`, with element/app/action results and `notFound`/`unsupported` failures. Version 4 added `scrollTo`. Version 5 removed the strategies that never worked in a background session (wheel scroll, AX page scroll and the PID mouse fallback), so input is now: click, type, setText, key and scrollTo.
 
-Capture metadata includes image `width`/`height` in pixels and display `pointWidth`/`pointHeight`. Coordinates for every input action use global display points with a top-left origin. Call `metadata.point(fromPixelX:y:)` to convert a point from the captured image. Current capture covers the main display; its origin is (0, 0).
+Capture metadata includes image `width`/`height` in pixels and display `pointWidth`/`pointHeight`. Coordinates for every input action use global display points with a top-left origin. Call `metadata.point(fromPixelX:y:)` to convert a point from the captured image; the agent tool layer avoids this by capturing at one pixel per point. Current capture covers the main display; its origin is (0, 0).
 
 ## Wire format
 
@@ -126,34 +127,32 @@ To see the retry path, stop the helper (`sudo launchctl bootout gui/$(id -u sbag
 The first time it runs in `sbagent`'s session, approve **Screen & System Audio Recording**, **Accessibility**, and **Send input events (PostEvent)** for ZoopHelper there. Permissions are per user and tied to the signature, which is why `bundle-helper.sh` signs with the "SessionBridge Dev" certificate.
 
 
-## Input spike
+## Input
+
+Agents use the tool layer in [AgentTools.md](AgentTools.md); `zoop-bridge call TOOL 'JSON'` runs exactly that path. The lower-level CLI commands talk to the helper directly:
 
 ```bash
 build/zoop-bridge inspect 300 200
 build/zoop-bridge elements com.apple.calculator --all --limit 300
-build/zoop-bridge open com.apple.calculator --verify
-build/zoop-bridge click 300 200 --verify
-build/zoop-bridge click 300 200 --right --verify
-build/zoop-bridge click 300 200 --double --verify
-build/zoop-bridge type 'hello from Zoop' --verify
-build/zoop-bridge set-text 'replacement' --at 300 200 --verify
-build/zoop-bridge key cmd+a --verify
-build/zoop-bridge scroll 300 200 --dy 5 --dx 0 --verify
-build/zoop-bridge scroll-page 300 200 --direction down --pages 1 --verify
+build/zoop-bridge open com.apple.calculator
+build/zoop-bridge click 300 200            # --right, --double
+build/zoop-bridge type 'hello from Zoop'
+build/zoop-bridge set-text 'replacement' --at 300 200
+build/zoop-bridge key cmd+a
+build/zoop-bridge scroll-to 300 200 --fraction 0.5   # --horizontal
+build/zoop-bridge tools --markdown         # regenerate Docs/AgentTools.md
+build/zoop-bridge call screenshot          # image saved under frames/
 ```
 
-Substitute coordinates from the agent's element tree or screenshot; these examples are placeholders. Quote text as one argument. Shell `$'line one\nline two\tend'` supplies actual Return/Tab characters. Use `--` before literal text that looks like an option, for example `type --verify -- '--help'`.
+Coordinates are placeholders. Quote text as one argument. Shell `$'line one\nline two'` supplies a real Return. Use `--` before literal text that looks like an option, for example `type -- '--help'`.
 
-Clicks hit-test with AX and walk up at most five ancestors. Single clicks use AXPress or focus writable text controls; right clicks use AXShowMenu and double clicks use AXOpen when advertised. Focus requests also try window-main and app-frontmost attributes inside the agent session. Once an AX action is attempted, its result is returned even on error; there is no event fallback that could click twice. If no AX strategy is available, mouse events go to the PID of a containing CG window, with both window-number fields set. When AX hit-testing identifies an owner, window selection is constrained to that PID so a screen-sized transparent window from another app cannot capture the event. Selection preserves front-to-back order within the matching app and fails if no matching containing window exists. Without an AX hit, including when Accessibility is missing, clicks use the window-list fallback with PostEvent permission.
+How each action works (tested results are in [InputFindings.md](InputFindings.md)):
 
-`type` and `key` use the system-wide AX focused element to find a PID. They require Accessibility and PostEvent. Typing sends a unicode key pair for each character, maps newline/Tab to real keys, and reads AXValue before and after. When a readable selection and the resulting value prove the exact insertion, `landed` is true. Otherwise it is unknown. `set-text` uses AXValue directly, requires Accessibility, and reports whether readback matches. Neither typing path falls back to the other. Scroll uses a PID-targeted wheel event and the same AX-owner-aware window selection as mouse-event fallback; positive deltas mean down/right. Scroll reports include the hit element when AX finds one.
+- **Click** is Accessibility-only. It hit-tests the point and checks the element and up to five ancestors. Left click performs AXPress, or focuses a text field/area/combo box (also requesting window-main and app-frontmost inside the agent session). Right click performs AXShowMenu; double click performs AXOpen. If nothing advertises the action, the helper returns `unsupported` and lists what it found. There is no mouse-event fallback: apps in a background session ignored PID-targeted mouse events in every test. Once an AX action is attempted its result is returned even on error, so a click is never sent twice.
+- **type** and **key** need Accessibility and PostEvent. They find a PID through the system-wide focused element, then the agent session's focused app's focused element, then its frontmost app's. If there is still none, `key` posts to the frontmost app itself (enough for shortcuts like Cmd+L); `type` fails with `notFound`. Typing sends a unicode key pair per character, maps newline/Tab to real keys, and reads AXValue before and after. `landed` is true only when a readable selection and the new value prove the exact insertion.
+- **setText** writes AXValue directly (Accessibility only) and reports whether the readback matches exactly. Neither typing path falls back to the other.
+- **scrollTo** sets an absolute position: 0 is the top (or left edge), 1 the bottom (or right edge). It walks up at most 30 elements (web content nests deeply) to the nearest same-app ancestor with an `AXVerticalScrollBar` (or `AXHorizontalScrollBar`), checks that the bar's AXValue is writable, writes it and reads it back after 50 ms. `landed` is true within 0.01 of the request, false when the readback differs, unknown when unreadable. Page Down/Up through `key` is the alternative for page-sized steps.
 
-`scroll-page` requires Accessibility and requests pages explicitly, with direction up/down/left/right and 1–10 pages (default 1). It hit-tests the point and chooses the nearest element or ancestor in the same app advertising the matching AXScroll…ByPage action. Unsupported targets return `unsupported`. Each requested page is attempted once; the first AX error stops the sequence. The axScrollPage report includes the target, last raw AXError and attempted/accepted counts in its detail; landed stays unknown until visual verification. AX success can occur at a scroll boundary without visible movement. It sends no wheel events and has no automatic fallback to line scrolling. All page-scroll requests are non-replayable and use the existing serialized action gate and input timeout.
+The helper posts events only to a target PID (`postToPid`) and has no HID-level injection path, so nothing reaches the main user's session. Isolation comes from this design, not from a runtime check. Input and app launching share a gate so actions never overlap across clients, including while an app launch suspends. AX reads have a 2 s [messaging timeout](https://developer.apple.com/documentation/applicationservices/1459345-axuielementsetmessagingtimeout) and retry once on `apiDisabled`; writes and actions are never retried. Tree queries return up to 1,000 results, scan at most 2,000 nodes and stop starting new nodes after 7 s, so results may be partial.
 
-The helper uses only `postToPid` for events, including while on console. It contains no HID injection path. Input and app launching share a gate so they cannot overlap across clients, including while an app launch suspends. AX reads have a 2 s [AX messaging timeout](https://developer.apple.com/documentation/applicationservices/1459345-axuielementsetmessagingtimeout) and retry a read once on `apiDisabled`; writes/actions are never retried. Tree queries return up to 1,000 results, scan at most 2,000 nodes and stop starting new nodes after 7 s. Individual AX calls can extend that elapsed time. Query results may therefore be partial.
-
-Every input action returns its method, target when available, PID/app, optional raw AXError, optional `landed`, and detail. An AX success means the request was accepted, not proof of the visual result. PID mouse/key/scroll delivery remains unknown without readback; use the next screenshot. Optional fields are omitted from JSON when unknown. A request timeout or interrupted connection does not cancel a queued or running action; inspect the result before sending another action.
-
-`--verify` observes the CLI's console session and refuses to run against the same user or an on-console helper. It samples the cursor and frontmost PID about every 2 ms and compares session keyDown and left/right/other mouseDown counters around the action plus a 200 ms settling period. A failed measurement exits nonzero, including when the action itself reports an error. Keep your own mouse and keyboard still during this measurement: your input also changes these counters. Sampling is evidence, not a guarantee that every transient event was observable. It does not prove that input landed in the agent app.
-
-See [InputFindings.md](InputFindings.md) for the real-session procedure and pending results.
+Every action returns an `ActionReport`: method, target, PID/app, raw AXError, optional `landed` and detail. AX success means the app accepted the request, not proof of the visual result. A request timeout or interrupted connection does not cancel a queued or running action; check the state before sending another.
