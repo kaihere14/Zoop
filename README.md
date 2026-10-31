@@ -4,7 +4,11 @@
 
 Zoop is a native macOS AI companion. You give it a task in chat, and it does the work inside a **separate macOS user session** while you keep using your own desktop. A floating pixel companion and a notch dock show progress. Finished files arrive in a shared folder.
 
-We build Zoop step by step. Implemented so far: the **session bridge** (step 2), covering `ZoopShared/Protocol`, `ZoopShared/Transport`, `ZoopHelper/Server` and screen capture. See [Docs/SessionBridge.md](Docs/SessionBridge.md). Folders that still hold only a `.gitkeep` come later.
+Implemented so far: the **persistent session bridge**, covering `ZoopShared/Protocol`, `ZoopShared/Transport`, `ZoopHelper/Server`, and screen capture; and the approved **native SwiftUI/AppKit notch interface** in `Sources/ZoopApp`. See [the session bridge guide](Docs/SessionBridge.md) and [the native UI guide](Docs/NativeNotch.md).
+
+The native UI includes streaming chat, task approval, live activities, a sleeping mascot, and sample report exports. Its execution provider currently uses demo data; connecting the interface to the session bridge and real automation remains separate work. The web reference remains in `Web/NotchDock`.
+
+On the project’s macOS 27+/Xcode 27 toolchain, run `swift run Zoop` from this folder. To create a local app bundle, run `./Scripts/bundle.sh`. AppKit compilation and visual verification still need to run on a Mac; the UI implementation was prepared on Linux.
 
 ---
 
@@ -156,7 +160,9 @@ Step 1 is the riskiest. We need to prove that input reaches a background session
 
 ```bash
 swift build                              # all targets
-swift test                               # unit + end-to-end session bridge tests
+swift test                               # UI model, research, protocol, and session bridge tests
+swift run Zoop                           # native notch companion (demo execution)
+Scripts/bundle.sh                        # build/Zoop.app (ad-hoc signed for local use)
 Scripts/bundle-helper.sh                 # build/ZoopHelper.app (signed) + build/zoop-bridge
 sudo Scripts/install-helper.sh sbagent   # install the helper as sbagent's LaunchAgent
 build/zoop-bridge status                 # talk to it from your own account

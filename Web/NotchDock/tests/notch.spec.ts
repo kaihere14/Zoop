@@ -1,0 +1,228 @@
+import { expect, test, type Page } from "@playwright/test";
+
+async function savedTasks(page: Page) {
+  return page.evaluate(() => JSON.parse(localStorage.getItem("zoop-notch-demo-v1") || '{"tasks":[]}').tasks as { status: string; progress: number; prompt: string }[]);
+}
+
+test("a task requires approval, dispatches once, pauses, and exports a report", async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "A little help. A lot more headspace." })).toBeVisible();
+  await page.screenshot({ path: `/tmp/zoop-${info.project.name}-welcome.png` });
+  await page.getByRole("button", { name: "Find my next keyboard" }).click();
+  await expect(page.getByRole("button", { name: "Start Process" })).toBeVisible();
+  await page.waitForTimeout(1400);
+  expect((await savedTasks(page))[0]).toMatchObject({ status: "pending", progress: 0 });
+  await page.screenshot({ path: `/tmp/zoop-${info.project.name}-plan.png` });
+  await page.getByRole("button", { name: "Start Process" }).click();
+  await expect(page.locator(".flying-ticket")).toBeVisible();
+  await expect(page.locator(".activity-counter")).toHaveText("1");
+  expect((await savedTasks(page)).filter(t => t.status === "running")).toHaveLength(1);
+  await page.getByRole("button", { name: /Live Activities/ }).click();
+  await expect(page.locator(".ghost-pointer")).toBeVisible();
+  await expect(page.locator(".ghost-pointer")).toHaveCSS("pointer-events", "none");
+  await page.waitForTimeout(2600);
+  await page.screenshot({ path: `/tmp/zoop-${info.project.name}-activities.png` });
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await expect.poll(async () => (await savedTasks(page))[0].status).toBe("paused");
+  const progress = (await savedTasks(page))[0].progress;
+  await page.waitForTimeout(1500);
+  expect((await savedTasks(page))[0].progress).toBe(progress);
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Save report" })).toBeVisible({ timeout: 40_000 });
+  await expect(page.locator(".task-tab")).toHaveCount(0);
+  await expect(page.locator(".task-tabs")).toHaveCSS("height", "0px");
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Save report" }).click();
+  expect((await download).suggestedFilename()).toBe("mechanical_keyboards.md");
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(page.getByRole("log")).toContainText("All done!");
+  await page.getByRole("button", { name: "Minimize Zoop" }).click();
+  await expect(page.getByRole("button", { name: "Open Zoop" })).toBeVisible();
+  await expect(page.locator(".collapsed-status")).toHaveAttribute("aria-label", "idling");
+  await expect(page.locator(".collapsed-status canvas")).toHaveCount(0);
+  await expect(page.locator(".notch-anchor").getByRole("img", { name: "Zoop is sleeping" })).toBeVisible();
+  await page.screenshot({ path: `/tmp/zoop-${info.project.name}-idling.png` });
+  await page.getByRole("button", { name: "Open Zoop" }).click();
+  await expect(page.getByRole("textbox", { name: "Message Zoop" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("supports conversation, revised plans, and safe restoration", async ({ page }) => {
+  await page.goto("/");
+  const input = page.getByRole("textbox", { name: "Message Zoop" });
+  await input.fill("Hello");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByRole("log")).toContainText("Hey, I’m Zoop.");
+  expect(await savedTasks(page)).toHaveLength(0);
+  await input.fill("Compare mechanical keyboards");
+  await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
+  await input.press("Enter");
+  await expect(page.getByRole("button", { name: "Start Process" })).toBeVisible();
+  await input.fill("Only include quiet switches under $150");
+  await input.press("Enter");
+  await expect(page.getByRole("log")).toContainText("I’ve adjusted the plan");
+  const tasks = await savedTasks(page);
+  expect(tasks[0].status).toBe("cancelled");
+  expect(tasks[1].prompt).toContain("Only include quiet switches under $150");
+  await expect(page.getByRole("button", { name: "Start Process" })).toHaveCount(1);
+  await page.getByRole("button", { name: "Start Process" }).click();
+  await expect(page.locator(".activity-counter")).toHaveText("1");
+  await page.reload();
+  await expect.poll(async () => (await savedTasks(page))[1].status).toBe("paused");
+  await page.getByRole("button", { name: /Live Activities/ }).click();
+  await expect(page.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect.poll(async () => (await savedTasks(page))[1].status).toBe("cancelled");
+  await page.getByRole("button", { name: "Reset demo" }).click();
+  await expect(page.getByRole("heading", { name: "A little help. A lot more headspace." })).toBeVisible();
+  expect(await savedTasks(page)).toHaveLength(0);
+});
+
+test("uses the requested thinking orb and streams text and plan steps", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Find my next keyboard" }).click();
+  await expect(page.locator('.zoop-thinking-orb[data-preset="thinking"] canvas')).toBeVisible();
+  const reply = page.locator(".message-assistant .message-text").first();
+  await expect(reply).toContainText("Of course.");
+  const initial = (await reply.innerText()).length;
+  expect(initial).toBeLessThan(100);
+  await expect(page.getByRole("button", { name: "Start Process" })).toHaveCount(0);
+  await page.waitForTimeout(180);
+  expect((await reply.innerText()).length).toBeGreaterThan(initial);
+  await expect(page.locator(".plan-stream-status canvas")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start Process" })).toBeVisible();
+  await expect(page.locator(".plan-card li")).toHaveCount(3);
+  await expect(page.locator(".stream-cursor")).toHaveCount(0);
+  expect((await savedTasks(page))[0]).toMatchObject({ status: "pending", progress: 0 });
+});
+
+test("desktop controls work and the drawer stays in the viewport", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Minimize Zoop" }).click();
+  await expect(page.getByRole("button", { name: "Open Zoop" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Notes", exact: true }).click();
+  const note = page.getByRole("textbox", { name: "Your personal note" });
+  await note.fill("My cursor, my thoughts, my desktop.");
+  await page.getByRole("button", { name: "Close window" }).click();
+  await page.getByRole("button", { name: "Open Notes", exact: true }).click();
+  await expect(note).toHaveValue("My cursor, my thoughts, my desktop.");
+  await page.getByRole("button", { name: "Close window" }).click();
+  await page.getByRole("button", { name: "Open settings", exact: true }).click();
+  await page.getByRole("button", { name: "Quiet morning" }).click();
+  await expect(page.locator(".desktop")).toHaveClass(/wallpaper-forest/);
+  await page.getByRole("button", { name: "Close window" }).click();
+  await page.getByRole("button", { name: "Open Zoop" }).click();
+  const bounds = await page.locator(".notch-surface").boundingBox();
+  const viewport = page.viewportSize()!;
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width + 1);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("outside clicks dismiss Zoop while its controls and dock remain usable", async ({ page }) => {
+  await page.goto("/");
+  const input = page.getByRole("textbox", { name: "Message Zoop" });
+  await input.click();
+  await input.fill("Keep this draft");
+  await page.getByRole("button", { name: "Mute sounds" }).click();
+  await expect(input).toBeVisible();
+  await page.getByRole("button", { name: "Open Notes", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Your personal note" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Zoop" })).toBeVisible();
+  await expect(page.locator(".collapsed-status canvas")).toHaveCount(0);
+  await expect(page.locator(".collapsed-status .status-label")).toHaveText("idling");
+  await expect(page.locator(".notch-anchor").getByRole("img", { name: "Zoop is sleeping" })).toBeVisible();
+  await expect(page.locator(".notch-anchor .sleep-z")).toHaveCount(1);
+  await page.getByRole("button", { name: "Close window" }).click();
+  await page.getByRole("button", { name: "Show Zoop drawer" }).click();
+  await expect(input).toBeVisible();
+  await expect(input).toHaveValue("Keep this draft");
+  await page.getByRole("button", { name: "Hide Zoop drawer" }).click();
+  await expect(page.getByRole("button", { name: "Open Zoop" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Zoop" }).click();
+  await expect(input).toBeVisible();
+  const viewport = page.viewportSize()!;
+  await page.locator(".desktop").click({ position: { x: 5, y: viewport.height - 120 } });
+  await expect(page.getByRole("button", { name: "Open Zoop" })).toBeVisible();
+});
+
+test("collapsed orb and animated label track background task changes", async ({ page }, info) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Find my next keyboard" }).click();
+  await page.getByRole("button", { name: "Start Process" }).click();
+  await expect(page.locator(".activity-counter")).toHaveText("1");
+  await page.locator(".desktop").click({ position: { x: 5, y: page.viewportSize()!.height - 120 } });
+  await expect(page.locator('.collapsed-status [data-preset="searching"] canvas')).toBeVisible();
+  await expect(page.locator(".collapsed-status .status-label")).toHaveText("searching");
+  await expect(page.locator(".collapsed-status")).toHaveAttribute("aria-label", "cooking", { timeout: 12_000 });
+  await expect(page.locator('.collapsed-status [data-preset="searching"][data-kind="globe"] canvas')).toBeVisible();
+  const orb = await page.locator(".collapsed-status canvas").boundingBox();
+  expect(orb!.height).toBeGreaterThanOrEqual(23);
+  await expect(page.locator(".collapsed-status .status-label").last()).toHaveCSS("filter", "blur(0px)");
+  await expect(page.locator(".collapsed-status .status-label")).toHaveCount(1);
+  await expect(page.locator(".collapsed-status .status-label")).toHaveCSS("opacity", "1");
+  const word = await page.locator(".collapsed-status .status-label-text").boundingBox();
+  expect(word!.x - orb!.x - orb!.width).toBeLessThanOrEqual(6);
+  await page.screenshot({ path: `/tmp/zoop-${info.project.name}-collapsed-orb.png` });
+  expect((await savedTasks(page))[0].status).toBe("running");
+  await page.getByRole("button", { name: "Open Zoop" }).click();
+  await page.getByRole("button", { name: /Live Activities/ }).click();
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByRole("button", { name: "Minimize Zoop" }).click();
+  await expect(page.locator(".collapsed-status .status-label")).toHaveText("paused");
+  await expect(page.locator(".collapsed-status [data-preset]")).not.toHaveAttribute("data-active");
+});
+
+test("completed history stays out of live tabs and the header is compact", async ({ page }) => {
+  await page.addInitScript(() => {
+    const finished = Array.from({ length: 6 }, (_, i) => ({ id: `finished-${i}`, title: "Finished research", prompt: "Compare tools", kind: "research", domain: "notion.so", file: "research_notes.md", steps: ["Research", "Compare", "Report"], status: "complete", progress: 100 }));
+    localStorage.setItem("zoop-notch-demo-v1", JSON.stringify({ tasks: [...finished, { ...finished[0], id: "paused-task", status: "paused", progress: 40 }], messages: finished.map(t => ({ id: `done-${t.id}`, role: "assistant", text: "All done!" })), sound: false }));
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /Live Activities/ }).click();
+  await expect(page.locator(".task-tab")).toHaveCount(1);
+  await expect(page.locator(".task-tab")).toContainText("paused:");
+  await expect(page.locator(".drawer-header")).toHaveCSS("height", "46px");
+  const statusOrb = await page.locator(".expanded-status canvas").boundingBox();
+  expect(statusOrb!.width).toBeGreaterThanOrEqual(14.9);
+  expect(statusOrb!.width).toBeCloseTo(statusOrb!.height, 0);
+  const footer = await page.locator(".activity-footer").boundingBox();
+  const drawer = await page.locator(".notch-surface").boundingBox();
+  expect(footer!.y + footer!.height).toBeLessThanOrEqual(drawer!.y + drawer!.height);
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(page.locator(".task-tab")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Save report" })).toBeVisible();
+});
+
+test("restores the latest chat immediately without blurring or replaying history", async ({ page }, info) => {
+  await page.addInitScript(() => {
+    const messages = Array.from({ length: 30 }, (_, i) => ({ id: `history-${i}`, role: i % 2 ? "assistant" : "user", text: `Earlier message ${i + 1}. ${"A little conversation about making room for the work that matters. ".repeat(3)}` }));
+    messages.push({ id: "latest", role: "assistant", text: "Your latest answer is right here. No scrolling needed." });
+    localStorage.setItem("zoop-notch-demo-v1", JSON.stringify({ tasks: [], messages, sound: false }));
+  });
+  const bottomDistance = () => page.locator(".chat-scroll").evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight);
+  await page.goto("/");
+  await expect(page.getByRole("log")).toBeVisible();
+  await expect.poll(bottomDistance).toBeLessThanOrEqual(1);
+  await expect(page.getByText("Your latest answer is right here. No scrolling needed.")).toBeInViewport();
+  await page.locator(".chat-scroll").evaluate(el => { el.scrollTop = 0; });
+  await expect.poll(() => page.locator(".chat-scroll").evaluate(el => el.scrollTop)).toBe(0);
+  await page.getByRole("button", { name: "Minimize Zoop" }).click();
+  await page.getByRole("button", { name: "Open Zoop" }).click();
+  await expect(page.getByRole("log")).toBeVisible();
+  await expect(page.locator(".drawer-content")).toHaveCSS("opacity", "1");
+  await expect.poll(bottomDistance).toBeLessThanOrEqual(1);
+  await expect(page.locator(".message").last()).toHaveCSS("transform", "none");
+  await expect(page.locator(".message").last()).toHaveCSS("opacity", "1");
+  await expect(page.locator(".drawer-content")).toHaveCSS("filter", "none");
+  await expect(page.locator(".drawer-content")).toHaveCSS("opacity", "1");
+  expect(await page.locator(".drawer-content").evaluate(el => Boolean(el.closest(".notch-surface")))).toBe(false);
+  await page.screenshot({ path: `/tmp/zoop-${info.project.name}-reopened-history.png` });
+  await page.getByRole("button", { name: /Live Activities/ }).click();
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect.poll(bottomDistance).toBeLessThanOrEqual(1);
+  await expect(page.getByText("Your latest answer is right here. No scrolling needed.")).toBeInViewport();
+});

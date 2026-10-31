@@ -1,0 +1,24 @@
+name: Native Swift UI
+on:
+  push:
+    paths: ["Package.swift", "Sources/**", "Tests/**", "Scripts/**", "Resources/InfoPlists/**", ".github/workflows/native-ui.yml"]
+  pull_request:
+    paths: ["Package.swift", "Sources/**", "Tests/**", "Scripts/**", "Resources/InfoPlists/**", ".github/workflows/native-ui.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Build native app
+        run: swift build
+      - name: Test approval, task lifecycle, persistence, and reports
+        run: swift test
+      - name: Bundle local app
+        run: bash Scripts/bundle.sh
