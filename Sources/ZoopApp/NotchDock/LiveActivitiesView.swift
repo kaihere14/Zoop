@@ -82,29 +82,37 @@ private struct AgentQuestionView: View {
             if question.permission != nil {
                 Text("Choose a button to answer this dialog.").font(.system(size: 10)).foregroundStyle(ZoopTheme.secondary)
             }
-            ScrollView { Text(question.text).font(.system(size: 11)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
             if let permission = question.permission {
-                ForEach(permission.choices) { choice in
-                    Button(choice.title) { answer(choice.id) }
-                        .buttonStyle(GlassButtonStyle()).font(.system(size: 11))
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(question.text).font(.system(size: 11)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ForEach(permission.choices) { choice in
+                            Button(choice.title) { answer(choice.id) }
+                                .buttonStyle(GlassButtonStyle()).font(.system(size: 11))
+                        }
+                        Button("Leave unchanged and end task") { answer("cancel_permission") }
+                            .buttonStyle(GlassButtonStyle()).font(.system(size: 10))
+                    }
                 }
-                Button("Leave unchanged and end task") { answer("cancel_permission") }
-                    .buttonStyle(GlassButtonStyle()).font(.system(size: 10))
-            } else if question.kind == .confirm {
-                HStack {
-                    Button("Deny") { answer("no") }.buttonStyle(GlassButtonStyle())
-                    Spacer()
-                    Button("Allow") { answer("yes") }.buttonStyle(GlassButtonStyle(accent: true))
-                }.font(.system(size: 10))
             } else {
-                TextField("Your answer", text: $response).textFieldStyle(.roundedBorder)
-                    .onSubmit { if !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { answer(response) } }
-                HStack {
-                    Button("Decline") { answer("no") }.buttonStyle(GlassButtonStyle())
-                    Spacer()
-                    Button("Send answer") { answer(response) }.buttonStyle(GlassButtonStyle(accent: true))
-                        .disabled(response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }.font(.system(size: 10))
+                ScrollView { Text(question.text).font(.system(size: 11)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                if question.kind == .confirm {
+                    HStack {
+                        Button("Deny") { answer("no") }.buttonStyle(GlassButtonStyle())
+                        Spacer()
+                        Button("Allow") { answer("yes") }.buttonStyle(GlassButtonStyle(accent: true))
+                    }.font(.system(size: 10))
+                } else {
+                    TextField("Your answer", text: $response).textFieldStyle(.roundedBorder)
+                        .onSubmit { if !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { answer(response) } }
+                    HStack {
+                        Button("Decline") { answer("no") }.buttonStyle(GlassButtonStyle())
+                        Spacer()
+                        Button("Send answer") { answer(response) }.buttonStyle(GlassButtonStyle(accent: true))
+                            .disabled(response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }.font(.system(size: 10))
+                }
             }
         }.padding(14).frame(height: 238)
             .background(ZoopTheme.lime.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))

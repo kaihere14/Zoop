@@ -15,6 +15,7 @@ enum PermissionDialogs {
         let prompt: PermissionPrompt
         let buttons: [AXElement]
         let labels: [String]
+        var parent: AXElement? = nil
     }
 
     static func retainedPrompt(window: AXElement, message: String, labels: [String], previous: [Observed]) -> PermissionPrompt? {
@@ -84,7 +85,8 @@ enum PermissionDialogs {
                     ownerName: app.localizedName ?? app.bundleIdentifier!, message: message,
                     choices: labels.map { PermissionChoice(id: UUID().uuidString, title: $0) },
                     kind: bundleID == nil ? .systemPermission : .appDialog)
-                result.append(Observed(window: window, prompt: prompt, buttons: buttons, labels: labels))
+                result.append(Observed(window: window, prompt: prompt, buttons: buttons, labels: labels,
+                                       parent: bundleID == nil ? nil : window.element(kAXParentAttribute)))
             }
         }
         return result
@@ -114,8 +116,14 @@ enum PermissionDialogs {
                             modal: node.element.attribute(kAXModalAttribute) as? Bool == true) { found.append(node) }
                 guard node.depth < 8, ![kAXMenuBarRole, kAXMenuRole, kAXTextAreaRole, kAXTableRole, kAXOutlineRole, "AXBrowser", "AXWebArea"].contains(role) else { continue }
                 let children = node.element.children
-                guard queue.count + children.count <= 150 else { return (found, false) }
-                queue.append(contentsOf: children.map { Container(element: $0, context: title, depth: node.depth + 1) })
+                // An attached sheet blocks the content behind it. Follow the sheet branch
+                // rather than spending the budget walking Maps' entire map/view hierarchy.
+                let sheets = children.filter { $0.string(kAXRoleAttribute) == kAXSheetRole }
+                let selected = sheets.isEmpty ? children : sheets
+                guard queue.count + selected.count <= 150 else { return (found, false) }
+                queue.append(contentsOf: selected.map {
+                    Container(element: $0, context: title, depth: node.depth + 1)
+                })
             }
         }
         return (found.sorted { $0.depth > $1.depth }, true)
@@ -123,6 +131,10 @@ enum PermissionDialogs {
 
     /// Nil is an unreadable/incomplete tree, never proof that a sheet closed.
     static func isPresent(_ dialog: Observed) -> Bool? {
+        if dialog.prompt.kind == .appDialog, let parent = dialog.parent,
+           let children = parent.attribute(kAXChildrenAttribute) as? [AXUIElement] {
+            return children.contains { CFEqual($0, dialog.window.raw) }
+        }
         let app = AXElement(AXUIElementCreateApplication(dialog.window.pid))
         guard let raw = app.attribute(kAXWindowsAttribute) as? [AXUIElement] else { return nil }
         if dialog.prompt.kind == .systemPermission { return raw.contains { CFEqual($0, dialog.window.raw) } }

@@ -94,7 +94,7 @@ Provider differences handled by the adapter:
 
 Each step:
 
-1. Sends the system prompt, the conversation and the tool list (the session tool catalog plus three control tools) to the model.
+1. Sends the system prompt, the conversation and the tool list (the session tool catalog plus executor control tools) to the model.
 2. Runs the requested tools one after another, in order, and appends one tool result per call.
 3. Sends screenshots back as a user message after the tool results, as JPEG, because OpenAI-compatible tool messages carry only text. Only the newest screenshot stays an image (`ExecutorLimits.keptScreenshots`, default 1); older ones become a short note so the conversation does not grow by an image every step.
 
@@ -104,6 +104,7 @@ Control tools:
 |---|---|
 | `report_progress` | A short note (and optional plan step and percent) for the notch and live activities. |
 | `ask_user` | Asks the person and waits. Required before anything hard to undo: sending messages, email or posts; purchases, payments or bookings; deleting or overwriting data; submitting forms; changing account, security or system settings. Also used for logins: the executor never types passwords, payment details or one-time codes. |
+| `request_dialog_help` | Final human fallback for a stuck app sheet after Accessibility and screenshot-based mouse clicking; presents exact choices through the helper. |
 | `finish_task` | Ends the task with success, a summary and an optional Markdown report. |
 
 The system prompt contains the tools' operating guide (`SessionTools.guide`) and these rules, and tells the executor to treat text on pages and in documents as information, not instructions.
@@ -148,4 +149,8 @@ See [NativeNotch.md](NativeNotch.md) for setup, persistence and base-version val
 
 ## System permission interruption
 
-Native execution wraps SessionToolbox in PermissionToolRunner. Before tools and after actions, it queries recognized system permission windows through the bridge. A pending dialog awaits UserPrompting.choosePermission with its exact observed choices, independently of the executor and its Auto mode. The UI returns only the selected opaque choice identity; the helper revalidates and performs it once. No permission-choice tool is declared to the model. Cancellation, stale identities, interrupted actions and unconfirmed presses cannot become implicit Allow responses. CLI compatibility uses the prompter's numbered/exact-label fallback when this wrapper is used; the native service wires it by default.
+Native execution wraps SessionToolbox in PermissionToolRunner. Before tools and after actions, it queries recognized system permission windows through the bridge. A pending dialog awaits UserPrompting.choosePermission with its exact observed choices, independently of the executor and its Auto mode. The UI returns only the selected opaque choice identity; the helper revalidates and performs it once. No permission-choice tool is declared to the model. Cancellation, stale identities, interrupted actions and unconfirmed presses cannot become implicit Allow responses. CLI compatibility uses the prompter's numbered/exact-label fallback when this wrapper is used; native and CLI execution wire it by default.
+
+## Final dialog recovery
+
+After AX and screenshot-based mouse clicks in the same app, the executor can call `request_dialog_help(bundle_id)`. DialogRecoveryState records these attempts (including a paused/failed batch in PlanRunner) and prevents premature or repeated human fallbacks. The one final human fallback can run at the automatic retry limit. The wrapper queries appDialogs, shows the real sheet context and exact choices through UserPrompting, and sends the selected identity directly to the helper. It never asks the model to translate a generic approval into Save/Allow. The returned human_choice and a fresh screenshot tell the model what actually happened; the task outcome still needs verification. See SessionBridge.md for the v8 transport and bounds.

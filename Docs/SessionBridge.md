@@ -37,7 +37,7 @@ The session bridge connects the Zoop app, which runs as the main user, to ZoopHe
 | `Sources/ZoopShared/Tools/` | Agent tool layer: catalog, operating guide, JSON Schemas and `SessionToolbox` executor. See [AgentTools.md](AgentTools.md). |
 | `Sources/ZoopBridgeCLI/main.swift` | `zoop-bridge` developer tool. |
 
-## Protocol v7
+## Protocol v8
 
 Build and reinstall the helper and client together: mismatched protocol versions refuse the handshake. Version 2 introduced `inspect`, `elements`, `openApp` and `input`, with element/app/action results and `notFound`/`unsupported` failures. Version 4 added `scrollTo`. Version 5 removed the strategies that never worked in a background session (wheel scroll, AX page scroll and the PID mouse fallback), so input is: click, type, setText, key and scrollTo. Version 6 adds explicit click strategies (`accessibility` by default, `mouse` for visual recovery with a required target bundle ID). Version 7 adds `permissionPrompts` (read-only) and `respondToPermission(promptID:choiceID:)` (non-replayable), plus a permission-prompt result. These dedicated requests are not model tools. Old helpers reject mismatched clients.
 
@@ -172,3 +172,13 @@ Inspect pending requests without changing permissions:
 ```sh
 build/zoop-bridge permissions
 ```
+
+## In-app dialog fallback (protocol v8)
+
+`appDialogs(bundleID:)` is a read-only query for the specified app's sheets and modal dialogs, rather than its entire element tree. Results use the human-choice prompt type with `kind: appDialog`; v7 system prompts retain `kind: systemPermission`. The existing non-replayable response request sends a human choice. Window title, visible dialog text, and non-secret text-field/pop-up values are included in the context, so a Save card shows the actual filename, not a model's proposed filename. Password dialogs and incomplete scans do not produce button tokens. Menu bars, web/document contents and file-browser tables are excluded from discovery.
+
+`request_dialog_help` is an executor control tool, not a planner action or a direct model-facing button press. The runtime requires recorded Accessibility and visual mouse attempts in that app, with screenshot checkpoints, before dispatch. It is available once as the final human fallback even when the automatic retry limit has been reached. Failed batch results seed the same state without replaying the completed prefix. System permission requests still interrupt automatically before tools, independently of this recovery order.
+
+On a user's choice, the helper re-reads the sheet, focuses/raises the existing dialog without reopening the app, and presses the exact bound AX element once. It checks for sheet dismissal in the app's descendant tree; simply being absent from the list of top-level windows is not sufficient. The executor observes a new screenshot before continuing and must respect Cancel/Don't Save. A dismissed Save sheet is not proof of a successful save. This path does not bypass apps rejecting synthetic/AX input and cannot invent controls absent from Accessibility.
+
+Read-only diagnostics: `build/zoop-bridge dialogs com.apple.TextEdit` or `build/zoop-bridge dialogs com.apple.Maps`. Source-level changes and scripted/socket tests pass; actual in-app button delivery needs live validation after installing v8. Existing system-permission buttons were confirmed working by the user on v7.
