@@ -14,6 +14,11 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
     private var hosting: NSHostingView<NotchRootView>?
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var globalMoveMonitor: Any?
+    private var localMoveMonitor: Any?
+    private var hoverTask: Task<Void, Never>?
+    /// After the island closes under the pointer, hovering must leave and come back before it reopens.
+    private var hoverArmed = true
     private var screenObserver: NSObjectProtocol?
     private var metrics = NotchMetrics(screenFrame: .init(x: 0, y: 0, width: 1440, height: 900), hardwareWidth: 160, hardwareHeight: 34, hasPhysicalNotch: false)
     var excludedScreenRects: () -> [CGRect] = { [] }
@@ -26,7 +31,10 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
         panel.isFloatingPanel = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // The window is a transparent rectangle; an AppKit shadow would outline that rectangle.
+        // SwiftUI draws the shadow around the rounded island instead.
+        panel.hasShadow = false
+        panel.acceptsMouseMovedEvents = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.level = .statusBar
@@ -49,7 +57,7 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
         let right = screen.auxiliaryTopRightArea
         let notchWidth = left.flatMap { left in right.map { $0.minX - left.maxX } } ?? 160
         metrics = .init(screenFrame: screen.frame, hardwareWidth: max(160, notchWidth), hardwareHeight: max(34, screen.safeAreaInsets.top), hasPhysicalNotch: screen.safeAreaInsets.top > 0)
-        let root = NotchRootView(store: store, metrics: metrics, onWindowGeometryChange: { [weak self] in self?.updateGeometry() })
+        let root = NotchRootView(store: store, metrics: metrics, onStateChange: { [weak self] in self?.stateChanged() })
         if let hosting { hosting.rootView = root }
         else {
             let view = NSHostingView(rootView: root)
@@ -61,16 +69,67 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
         updateGeometry()
     }
 
+    /// The window keeps one fixed size; only the SwiftUI island inside it animates. Resizing the
+    /// window per state would make every open/close jump instead of morph.
     private func updateGeometry() {
-        let size = metrics.windowSize(expanded: store.isExpanded, activities: store.destination == .activities)
+        let size = metrics.windowSize
         let frame = CGRect(x: metrics.screenFrame.midX - size.width / 2, y: metrics.screenFrame.maxY - size.height, width: size.width, height: size.height)
+        if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
+        stateChanged()
+    }
+
+    /// Screen rectangle of the visible island. Everything else in the window is transparent and click-through.
+    private var interactiveRect: CGRect {
+        let size = metrics.interactiveSize(expanded: store.isExpanded, activities: store.destination == .activities, busy: store.notchBusy)
+        return CGRect(x: metrics.screenFrame.midX - size.width / 2, y: metrics.screenFrame.maxY - size.height, width: size.width, height: size.height)
+    }
+
+    private func stateChanged() {
         panel.permitsKey = store.isExpanded
-        panel.setFrame(frame, display: true, animate: false)
-        if store.isExpanded { panel.makeKeyAndOrderFront(nil) }
-        else if panel.isKeyWindow { panel.resignKey() }
+        if store.isExpanded {
+            hoverTask?.cancel(); hoverTask = nil
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            if panel.isKeyWindow { panel.resignKey() }
+            if interactiveRect.contains(NSEvent.mouseLocation) { hoverArmed = false }
+        }
+        updateMousePassThrough()
+    }
+
+    /// A transparent window still captures clicks over its whole frame, so we toggle
+    /// `ignoresMouseEvents` as the pointer enters or leaves the island.
+    private func updateMousePassThrough() {
+        let inside = interactiveRect.contains(NSEvent.mouseLocation)
+        if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
+    }
+
+    private func mouseMoved() {
+        updateMousePassThrough()
+        let inside = interactiveRect.contains(NSEvent.mouseLocation)
+        guard !store.isExpanded else { return }
+        if !inside {
+            hoverArmed = true
+            hoverTask?.cancel(); hoverTask = nil
+        } else if hoverArmed, hoverTask == nil {
+            // A short dwell avoids opening when the pointer only passes by on its way to the menu bar.
+            hoverTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled else { return }
+                self.hoverTask = nil
+                if !self.store.isExpanded, self.interactiveRect.contains(NSEvent.mouseLocation) { self.store.isExpanded = true }
+            }
+        }
     }
 
     private func installEventMonitors() {
+        let moveEvents: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        globalMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: moveEvents) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.mouseMoved() }
+        }
+        localMoveMonitor = NSEvent.addLocalMonitorForEvents(matching: moveEvents) { [weak self] event in
+            MainActor.assumeIsolated { self?.mouseMoved() }
+            return event
+        }
         let mouseEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseEvents) { [weak self] _ in
             Task { @MainActor [weak self] in self?.dismissOutside() }
@@ -81,8 +140,8 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
             let flags = event.modifierFlags
             let consumed = MainActor.assumeIsolated {
                 guard let self else { return false }
-                if isKey { return handleKey(code: code, flags: flags) }
-                dismissOutside()
+                if isKey { return self.handleKey(code: code, flags: flags) }
+                self.dismissOutside()
                 return false
             }
             return consumed ? nil : event
@@ -92,7 +151,7 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
     private func dismissOutside() {
         guard store.isExpanded else { return }
         let point = NSEvent.mouseLocation
-        guard !panel.frame.contains(point), !excludedScreenRects().contains(where: { $0.contains(point) }) else { return }
+        guard !interactiveRect.contains(point), !excludedScreenRects().contains(where: { $0.contains(point) }) else { return }
         store.isExpanded = false
     }
 
@@ -111,8 +170,11 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
     func shutdown() {
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        if let globalMoveMonitor { NSEvent.removeMonitor(globalMoveMonitor) }
+        if let localMoveMonitor { NSEvent.removeMonitor(localMoveMonitor) }
+        hoverTask?.cancel(); hoverTask = nil
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
-        globalMonitor = nil; localMonitor = nil; screenObserver = nil
+        globalMonitor = nil; localMonitor = nil; globalMoveMonitor = nil; localMoveMonitor = nil; screenObserver = nil
         panel.orderOut(nil)
     }
 }

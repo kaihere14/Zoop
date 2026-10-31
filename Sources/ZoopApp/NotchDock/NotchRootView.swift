@@ -7,80 +7,73 @@ struct NotchMetrics: Equatable {
     var hardwareHeight: CGFloat
     var hasPhysicalNotch: Bool
 
+    /// Room around the island for its soft shadow. The window never resizes, so this is fixed.
+    static let shadowMargin: CGFloat = 44
+    static let underbarHeight: CGFloat = 24
+    static let collapsedFlare: CGFloat = 6
+    static let expandedFlare: CGFloat = 10
+    static let contentInset: CGFloat = 28
+    static let maxMainHeight: CGFloat = 520
+
     var expandedWidth: CGFloat { min(820, screenFrame.width - 32) }
-    var collapsedWidth: CGFloat { min(hardwareWidth + 216, screenFrame.width - 32) }
+    /// Each wing beside the camera is narrow when idle and widens when status text and the orb need room.
+    func collapsedWidth(busy: Bool) -> CGFloat {
+        min(hardwareWidth + 2 * (busy ? 118 : 66), screenFrame.width - 32)
+    }
+    func islandWidth(expanded: Bool, busy: Bool) -> CGFloat { expanded ? expandedWidth : collapsedWidth(busy: busy) }
     func mainHeight(expanded: Bool, activities: Bool) -> CGFloat {
-        expanded ? min(activities ? 488 : 520, screenFrame.height - 80) : hardwareHeight
+        expanded ? min(activities ? 488 : Self.maxMainHeight, screenFrame.height - 80) : hardwareHeight
     }
-    func windowSize(expanded: Bool, activities: Bool) -> CGSize {
-        .init(width: expanded ? expandedWidth : collapsedWidth, height: mainHeight(expanded: expanded, activities: activities) + (expanded ? 24 : 0))
+    /// The visible, clickable part of the window (island plus the underbar when expanded).
+    func interactiveSize(expanded: Bool, activities: Bool, busy: Bool) -> CGSize {
+        .init(width: islandWidth(expanded: expanded, busy: busy),
+              height: mainHeight(expanded: expanded, activities: activities) + (expanded ? Self.underbarHeight : 0))
     }
+    /// Fixed window size large enough for the expanded island and its shadow.
+    var windowSize: CGSize {
+        .init(width: expandedWidth + 2 * Self.shadowMargin,
+              height: min(Self.maxMainHeight, screenFrame.height - 80) + Self.underbarHeight + Self.shadowMargin)
+    }
+}
+
+extension CompanionStore {
+    /// Whether the collapsed island shows activity (orb + status) and therefore needs wider wings.
+    var notchBusy: Bool { compactStatus != "idling" }
 }
 
 struct NotchRootView: View {
     @Bindable var store: CompanionStore
     let metrics: NotchMetrics
-    let onWindowGeometryChange: () -> Void
+    let onStateChange: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var controlFrames: [String: CGRect] = [:]
     @State private var flights: [PaperFlight] = []
     @State private var pulse = false
 
-    private var width: CGFloat { store.isExpanded ? metrics.expandedWidth : metrics.collapsedWidth }
-    private var height: CGFloat { metrics.mainHeight(expanded: store.isExpanded, activities: store.destination == .activities) }
+    private var expanded: Bool { store.isExpanded }
+    private var activities: Bool { store.destination == .activities }
+    private var width: CGFloat { metrics.islandWidth(expanded: expanded, busy: store.notchBusy) }
+    private var height: CGFloat { metrics.mainHeight(expanded: expanded, activities: activities) }
+    private var flare: CGFloat { expanded ? NotchMetrics.expandedFlare : NotchMetrics.collapsedFlare }
+    private var radius: CGFloat { expanded ? 28 : 14 }
+    private var morph: Animation { reduceMotion ? .easeOut(duration: 0.12) : ZoopTheme.island }
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .top) {
-                // Only the glass changes dimensions. The content is never scaled or blurred.
-                LiquidGlass(expanded: store.isExpanded, working: store.workingTask != nil)
-                    .frame(width: width, height: height)
-                    .animation(reduceMotion ? .easeOut(duration: 0.1) : ZoopTheme.spring, value: store.isExpanded)
-                    .animation(reduceMotion ? .easeOut(duration: 0.1) : ZoopTheme.spring, value: store.destination)
-                if store.isExpanded {
-                    VStack(spacing: 0) {
-                        header
-                        if store.destination == .chat { ChatView(store: store, onStart: dispatch) }
-                        else { LiveActivitiesView(store: store) }
-                    }
-                    .padding(.horizontal, 23)
-                    .padding(.top, metrics.hardwareHeight)
-                    .frame(width: width, height: height)
-                    .transition(.opacity)
-                } else {
-                    Button { store.isExpanded = true } label: {
-                        HStack {
-                            ZoopMascot(mood: store.mood, size: 30)
-                            Spacer(minLength: metrics.hardwareWidth)
-                            NotchStatus(label: store.compactStatus, active: store.workingTask != nil || store.mood == .thinking, compact: true)
-                                .frame(width: 94, alignment: .leading)
-                        }.padding(.leading, 20).padding(.trailing, 12).frame(width: width, height: height)
-                    }.buttonStyle(.plain).accessibilityLabel("Open Zoop")
-                }
-                RoundedRectangle(cornerRadius: 0).fill(.black)
-                    .frame(width: metrics.hardwareWidth, height: metrics.hardwareHeight)
-                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 16, bottomTrailingRadius: 16, topTrailingRadius: 0))
-                    .overlay(alignment: .trailing) {
-                        if !metrics.hasPhysicalNotch { Circle().fill(Color(red: 0.04, green: 0.06, blue: 0.08)).frame(width: 5, height: 5).padding(.trailing, 26) }
-                    }.allowsHitTesting(false).accessibilityHidden(true)
-                ForEach(flights) { flight in
-                    FlyingPaperTicket(flight: flight, reduceMotion: reduceMotion) {
-                        store.finishDispatch(flight.taskID)
-                        flights.removeAll { $0.id == flight.id }
-                    }
-                }
+            island
+            if expanded {
+                underbar.frame(width: width, height: NotchMetrics.underbarHeight)
+                    .transition(reduceMotion ? .opacity : .notchContent(delay: 0.12))
             }
-            .frame(width: width, height: height, alignment: .top)
-            .coordinateSpace(name: "notch")
-            .onPreferenceChange(ControlFramesKey.self) { frames in
-                Task { @MainActor in controlFrames = frames }
-            }
-            if store.isExpanded { underbar.frame(height: 24) }
         }
-        .frame(width: width, height: metrics.windowSize(expanded: store.isExpanded, activities: store.destination == .activities).height, alignment: .top)
+        .frame(width: metrics.windowSize.width, height: metrics.windowSize.height, alignment: .top)
+        .animation(morph, value: store.isExpanded)
+        .animation(morph, value: store.destination)
+        .animation(morph, value: store.notchBusy)
         .preferredColorScheme(.dark)
-        .onChange(of: store.isExpanded) { onWindowGeometryChange() }
-        .onChange(of: store.destination) { onWindowGeometryChange() }
+        .onChange(of: store.isExpanded) { onStateChange() }
+        .onChange(of: store.destination) { onStateChange() }
+        .onChange(of: store.notchBusy) { onStateChange() }
         .onChange(of: store.liveTasks.count) { old, new in
             guard new > old, !reduceMotion else { return }
             Task { @MainActor in
@@ -91,16 +84,87 @@ struct NotchRootView: View {
         }
     }
 
+    /// The morphing island. Content is laid out at its final size and clipped by the animated shape,
+    /// so text is never scaled while the island grows or shrinks.
+    private var island: some View {
+        ZStack(alignment: .top) {
+            if expanded {
+                ZStack(alignment: .top) {
+                    Group {
+                        if activities { LiveActivitiesView(store: store) }
+                        else { ChatView(store: store, onStart: dispatch) }
+                    }
+                    .padding(.top, metrics.hardwareHeight + 46)
+                    .transition(reduceMotion ? .opacity : .notchContent(delay: 0.04))
+                    header.padding(.top, metrics.hardwareHeight)
+                }
+                .padding(.horizontal, NotchMetrics.contentInset)
+                .frame(width: metrics.expandedWidth, height: metrics.mainHeight(expanded: true, activities: activities), alignment: .top)
+                .transition(reduceMotion ? .opacity : .notchContent(delay: 0.08))
+            } else {
+                Button { store.isExpanded = true } label: {
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        NotchStatus(label: store.compactStatus, active: store.workingTask != nil || store.mood == .thinking, compact: true)
+                            .fixedSize()
+                    }
+                    .padding(.trailing, NotchMetrics.collapsedFlare + 12)
+                    .frame(width: width, height: height)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).accessibilityLabel("Open Zoop")
+                .transition(.opacity.animation(.easeOut(duration: expanded ? 0.1 : 0.25).delay(expanded ? 0 : 0.12)))
+            }
+            Color.black
+                .frame(width: metrics.hardwareWidth, height: metrics.hardwareHeight)
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 16, bottomTrailingRadius: 16, topTrailingRadius: 0))
+                .overlay(alignment: .trailing) {
+                    if !metrics.hasPhysicalNotch { Circle().fill(Color(red: 0.04, green: 0.06, blue: 0.08)).frame(width: 5, height: 5).padding(.trailing, 26) }
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            mascot
+        }
+        .frame(width: width, height: height, alignment: .top)
+        .clipShape(NotchShape(flare: flare, radius: radius))
+        .background(LiquidGlass(expanded: expanded, working: store.workingTask != nil, flare: flare, radius: radius))
+        .overlay(alignment: .topLeading) {
+            ForEach(flights) { flight in
+                FlyingPaperTicket(flight: flight, reduceMotion: reduceMotion) {
+                    store.finishDispatch(flight.taskID)
+                    flights.removeAll { $0.id == flight.id }
+                }
+            }
+        }
+        .coordinateSpace(name: "notch")
+        .onPreferenceChange(ControlFramesKey.self) { frames in
+            Task { @MainActor in controlFrames = frames }
+        }
+    }
+
+    /// One mascot that travels between the collapsed wing and the header, instead of two copies cross-fading.
+    private var mascot: some View {
+        let size: CGFloat = 32
+        let scale: CGFloat = expanded ? 1 : 26 / 32
+        let center = expanded
+            ? CGPoint(x: (width - metrics.expandedWidth) / 2 + NotchMetrics.contentInset + size / 2, y: metrics.hardwareHeight + 23)
+            : CGPoint(x: NotchMetrics.collapsedFlare + 10 + 13, y: metrics.hardwareHeight / 2)
+        return ZoopMascot(mood: store.mood, size: size)
+            .frame(width: size, height: size)
+            .scaleEffect(scale)
+            .offset(x: center.x - size / 2, y: center.y - size / 2)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .allowsHitTesting(false)
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
-            ZoopMascot(mood: store.mood, size: 32)
+            Color.clear.frame(width: 32, height: 32) // the shared mascot is drawn here by `mascot`
             VStack(alignment: .leading, spacing: 1) {
                 HStack(alignment: .top, spacing: 1) {
                     Text("zoop").font(.system(size: 18, weight: .bold)).tracking(-0.8)
                     Text("®").font(.system(size: 7)).padding(.top, 2)
                 }.foregroundStyle(ZoopTheme.text)
                 NotchStatus(label: store.status, active: store.workingTask != nil || store.mood == .thinking)
-                    .frame(width: min(250, width * 0.35), height: 18, alignment: .leading)
+                    .frame(width: min(250, metrics.expandedWidth * 0.35), height: 18, alignment: .leading)
             }
             Spacer()
             Button { store.destination = store.destination == .activities ? .chat : .activities } label: {
@@ -136,7 +200,7 @@ struct NotchRootView: View {
             Button { store.revealExports() } label: { Image(systemName: "folder").font(.system(size: 11)) }.accessibilityLabel("Open exports folder")
             Button { store.toggleSound() } label: { Image(systemName: store.soundEnabled ? "speaker.wave.2" : "speaker.slash").font(.system(size: 11)) }.accessibilityLabel(store.soundEnabled ? "Mute sounds" : "Enable sounds")
             Button { store.reset() } label: { Image(systemName: "arrow.counterclockwise").font(.system(size: 10)) }.accessibilityLabel("Reset demo")
-        }.buttonStyle(.plain).foregroundStyle(ZoopTheme.secondary).padding(.horizontal, 20)
+        }.buttonStyle(.plain).foregroundStyle(ZoopTheme.secondary).padding(.horizontal, 20 + NotchMetrics.expandedFlare)
     }
 
     private func dispatch(_ id: UUID) {

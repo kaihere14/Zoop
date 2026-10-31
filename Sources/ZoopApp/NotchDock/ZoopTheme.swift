@@ -6,6 +6,8 @@ enum ZoopTheme {
     static let secondary = Color(red: 0.61, green: 0.66, blue: 0.55)
     static let spring = Animation.interpolatingSpring(mass: 0.8, stiffness: 300, damping: 28, initialVelocity: 0)
     static let quiet = Animation.easeOut(duration: 0.18)
+    /// Island morph: damping 0.78 overshoots by about 2% before settling, like the Dynamic Island.
+    static let island = Animation.spring(response: 0.46, dampingFraction: 0.78)
 }
 
 struct GlassButtonStyle: ButtonStyle {
@@ -30,6 +32,15 @@ struct BlurSlide: ViewModifier {
 }
 
 extension AnyTransition {
+    /// Content that drops out of the notch: it starts slightly above, blurred and transparent, and arrives
+    /// after the island has started growing. Removal is a quick fade so it never lingers outside a shrinking shape.
+    static func notchContent(delay: Double) -> AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: BlurSlide(opacity: 0, blur: 8, y: -18), identity: BlurSlide(opacity: 1, blur: 0, y: 0))
+                .animation(.spring(response: 0.42, dampingFraction: 0.86).delay(delay)),
+            removal: .opacity.animation(.easeIn(duration: 0.1)))
+    }
+
     static var statusWord: AnyTransition {
         .asymmetric(
             insertion: .modifier(active: BlurSlide(opacity: 0, blur: 6, y: 8), identity: BlurSlide(opacity: 1, blur: 0, y: 0)),
