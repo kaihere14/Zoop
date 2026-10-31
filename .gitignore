@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved.bak
+/Packages
+
+# Xcode (if a project/workspace is generated later)
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+DerivedData/
+xcuserdata/
+
+# Bundled app output from Scripts/bundle.sh
+build/
+*.app
+*.dSYM
+
+# Secrets and local configuration — never commit API keys
+.env
+.env.*
+!.env.example
+config.local.json
+*.pem
+*.p12
+
+# Logs and runtime files
+*.log
+*.sock
+
+# Editors
+.vscode/
+.idea/
+*.swp
