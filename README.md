@@ -6,13 +6,13 @@ Zoop is a native macOS AI companion. You give it a task in chat, and it does the
 
 Implemented so far: the **persistent session bridge**, covering `ZoopShared/Protocol`, `ZoopShared/Transport`, `ZoopHelper/Server`, and screen capture; and the approved **native SwiftUI/AppKit notch interface** in `Sources/ZoopApp`. See [the session bridge guide](Docs/SessionBridge.md) and [the native UI guide](Docs/NativeNotch.md).
 
-The helper can also **act in the agent session**: Accessibility clicks, keystrokes and shortcuts, exact text writes, scrolling and app launching, all without touching your cursor or keyboard. The agent layer reaches these through ten tools in `ZoopShared/Tools`; [the agent tool reference](Docs/AgentTools.md) explains each tool, its results and how to recover from failures, and [input findings](Docs/InputFindings.md) summarizes what was tested. Protocol v5 requires rebuilding and reinstalling both bridge binaries together.
+The helper can also **act in the agent session**: Accessibility clicks, keystrokes and shortcuts, exact text writes, scrolling and app launching, all without touching your cursor or keyboard. The agent layer reaches these through ten tools in `ZoopShared/Tools`; [the agent tool reference](Docs/AgentTools.md) explains each tool, its results and how to recover from failures, and [input findings](Docs/InputFindings.md) summarizes what was tested. Protocol v7 adds human permission-dialog choices (after v6 mouse-click recovery) and requires rebuilding and reinstalling both bridge binaries together.
 
-The **agent layer** has started: a provider-neutral model layer and the executor agent, which runs a task end to end through those tools. Try it with `swift run zoop-agent run "…"`; see [the agent layer guide](Docs/AgentLayer.md). The chat agent and UI wiring are next.
+The **agent layer** includes provider-neutral models, a grounded planner, a direct plan runner and a free-form executor. `swift run zoop-agent plan "TASK"` proposes named-target steps using read-only observations. `swift run zoop-agent run "TASK"` asks for approval, runs known tool calls directly in Swift, and invokes the executor model for decision/repair checkpoints. Use `--no-plan` for free-form execution. See [the agent layer guide](Docs/AgentLayer.md) for configuration and verification limits. The native notch uses this flow for normal chat and one approved task at a time.
 
-The native UI includes streaming chat, task approval, live activities, a sleeping mascot, and sample report exports. Its execution provider currently uses demo data; connecting the interface to the session bridge and real automation remains separate work. The web reference remains in `Web/NotchDock`.
+The base native UI connects chat → planner → Execute the plan → runner/helper → actual result. It shows real progress and observed screenshots for one task at a time. Add API keys and choose the provider in the app's Settings (stored in the Keychain), or configure the three model roles in `~/.zoop/config.json`; see [the native UI guide](Docs/NativeNotch.md). The web reference remains in `Web/NotchDock`.
 
-On the project’s macOS 27+/Xcode 27 toolchain, run `swift run Zoop` from this folder. To create a local app bundle, run `./Scripts/bundle.sh`. AppKit compilation and visual verification still need to run on a Mac; the UI implementation was prepared on Linux.
+On the project’s macOS 27+/Xcode 27 toolchain, run `swift run Zoop` from this folder. To create a local app bundle, run `./Scripts/bundle.sh`. The app is built on the project’s macOS toolchain. Visual acceptance and a live run with your configured models remain manual checks.
 
 ---
 
@@ -165,7 +165,7 @@ Step 1 is the riskiest. We need to prove that input reaches a background session
 ```bash
 swift build                              # all targets
 swift test                               # UI model, research, protocol, and session bridge tests
-swift run Zoop                           # native notch companion (demo execution)
+swift run Zoop                           # native notch companion (configured models + helper)
 Scripts/bundle.sh                        # build/Zoop.app (ad-hoc signed for local use)
 Scripts/bundle-helper.sh                 # build/ZoopHelper.app (signed) + build/zoop-bridge
 sudo Scripts/install-helper.sh sbagent   # install the helper as sbagent's LaunchAgent

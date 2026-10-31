@@ -16,7 +16,9 @@ public enum ZoopProtocol {
     /// v4: scrollTo action (scroll bar AXValue write) and axScrollBarValue report method.
     /// v5: removed actions that never worked in a background session (wheel scroll, AX page
     ///     scroll, PID mouse fallback). Clicks are Accessibility-only.
-    public static let version = 5
+    /// v6: explicit PID mouse recovery; v7: observed system dialogs and human choices.
+    /// v8: explicit in-app dialog handoff, using the same human-choice response path.
+    public static let version = 8
 }
 
 // MARK: - Payload types
@@ -138,6 +140,9 @@ public enum HelperRequest: Codable, Sendable, Equatable {
     case openApp(bundleID: String)
     /// Click, type, key combo, set text or scroll-to in the agent session.
     case input(action: InputAction)
+    case permissionPrompts
+    case appDialogs(bundleID: String)
+    case respondToPermission(promptID: String, choiceID: String)
 
     public var name: String {
         switch self {
@@ -149,6 +154,9 @@ public enum HelperRequest: Codable, Sendable, Equatable {
         case .elements: "elements"
         case .openApp: "openApp"
         case .input(let action): action.name
+        case .permissionPrompts: "permissionPrompts"
+        case .appDialogs: "appDialogs"
+        case .respondToPermission: "respondToPermission"
         }
     }
 
@@ -160,8 +168,8 @@ public enum HelperRequest: Codable, Sendable, Equatable {
     /// may already have run before the drop, and a second copy would press the button twice.
     public var isReplayable: Bool {
         switch self {
-        case .hello, .ping, .info, .capture, .inspect, .elements: true
-        case .openApp, .input: false
+        case .hello, .ping, .info, .capture, .inspect, .elements, .permissionPrompts, .appDialogs: true
+        case .openApp, .input, .respondToPermission: false
         }
     }
 }
@@ -175,6 +183,7 @@ public enum HelperResult: Codable, Sendable, Equatable {
     case elements(list: [ElementInfo])
     case app(info: AppInfo)
     case action(report: ActionReport)
+    case permissionPrompts(list: [PermissionPrompt])
 }
 
 /// A failure reported by the helper itself.

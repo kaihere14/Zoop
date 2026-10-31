@@ -41,16 +41,37 @@ public enum MouseButton: String, Codable, Sendable {
     case left, right
 }
 
+public enum ClickStrategy: String, Codable, Sendable {
+    case accessibility, mouse
+}
+
 public struct ClickAction: Codable, Sendable, Equatable {
     public var point: Point
     public var button: MouseButton
     /// 1 = single click, 2 = double click.
     public var count: Int
+    public var strategy: ClickStrategy
+    /// Required for mouse clicks so a stale point cannot target another app.
+    public var bundleID: String?
 
-    public init(point: Point, button: MouseButton = .left, count: Int = 1) {
+    public init(point: Point, button: MouseButton = .left, count: Int = 1,
+                strategy: ClickStrategy = .accessibility, bundleID: String? = nil) {
         self.point = point
         self.button = button
         self.count = count
+        self.strategy = strategy
+        self.bundleID = bundleID
+    }
+
+    private enum CodingKeys: String, CodingKey { case point, button, count, strategy, bundleID }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        point = try values.decode(Point.self, forKey: .point)
+        button = try values.decode(MouseButton.self, forKey: .button)
+        count = try values.decode(Int.self, forKey: .count)
+        strategy = try values.decodeIfPresent(ClickStrategy.self, forKey: .strategy) ?? .accessibility
+        bundleID = try values.decodeIfPresent(String.self, forKey: .bundleID)
     }
 }
 
@@ -211,6 +232,8 @@ public struct AppInfo: Codable, Sendable, Equatable {
 
 /// How the helper carried out an action.
 public enum ActionMethod: String, Codable, Sendable {
+    /// Mouse down/up sent only to the app owning the visible target window.
+    case pidMouse
     /// Accessibility press on a button, link, checkbox or similar.
     case axPress
     /// Accessibility "open", used for double-clicks on items that support it.

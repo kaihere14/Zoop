@@ -10,7 +10,7 @@ ExecutorAgent ──ModelRequest──▶ ChatModel (OpenAICompatibleModel) ─�
       └─ AgentEvent ──▶ progress for the UI or CLI
 ```
 
-Status: the model layer and the executor are built and unit-tested with scripted models. The chat agent and the UI wiring come next.
+Status: the model layer, grounded planner, direct plan runner and free-form executor are built and tested with scripted models. The CLI can propose a plan for approval, run known tool calls without a model, and ask the executor model to repair or decide. Normal chat and the single-task native approval/result flow are connected through LiveCompanionService; see [NativeNotch.md](NativeNotch.md).
 
 First live run (2026-10-31, Gemini `gemini-3.5-flash` through the OpenAI-compatible endpoint): "Open Calculator and compute 12 × 34" completed in 17 model calls. The executor checked the session, took a screenshot, opened Calculator, read the buttons with `list_elements`, pressed AC 1 2 × 3 4 = with Accessibility, confirmed `408` in a screenshot and finished with a summary. It used 132,506 input and 389 output tokens, because it sent one click per model call and every call resends the conversation. Asking for several tool calls per response did not change this, so two tools were added: `batch` (several actions in one call, checked first, stopped at the first failure) and clicks by element name (`bundle_id` + `element`), so the model no longer copies coordinates.
 
@@ -30,7 +30,12 @@ In the last run each batch pressed seven buttons in one call. The first batch us
 | `LLM/ChatModel.swift` | Provider-neutral messages, tool calls, tools, requests, responses and `ModelError`. |
 | `LLM/OpenAICompatibleModel.swift` | Adapter for the OpenAI Chat Completions format: encoding, decoding, retries, model listing. |
 | `LLM/ModelConfiguration.swift` | Provider presets and resolution of provider, model and key. |
-| `Agents/Executor/ExecutorAgent.swift` | The agent loop. |
+| `Agents/Executor/ExecutorAgent.swift` | Public free-form executor, backed by the shared conversation engine. |
+| `Agents/Executor/AgentSession.swift` | Model/tool loop shared by free-form execution, repair and decision sessions. |
+| `ZoopShared/Tasks/TaskPlan.swift` | Codable plans with readable summaries, tool details and per-step confirmation flags; whole-plan validation and UI persistence. |
+| `Agents/Planner/PlannerAgent.swift` | Read-only screenshot/element grounding and structured plan generation. |
+| `Agents/Planner/PlannerPrompt.swift` | Planning rules and provider-compatible submit_plan schema. |
+| `Agents/Planner/PlanRunner.swift` | Direct Swift tool execution, approval boundaries, fresh observations and bounded model assistance. |
 | `Agents/Executor/ExecutorPrompt.swift` | System prompt, approval rules and the control tools. |
 | `Agents/Executor/ExecutorTypes.swift` | Task, limits, events, outcome, and the `ToolRunning` / `UserPrompting` interfaces. |
 | `Agents/Executor/ImageCompression.swift` | PNG screenshots to JPEG before they go to the model. |
@@ -50,12 +55,13 @@ One adapter covers every provider that accepts the OpenAI Chat Completions forma
 | `lmstudio` | `http://localhost:1234/v1/` | none |
 | `custom` | set `baseURL` | `ZOOP_CUSTOM_API_KEY` (optional) |
 
-Each agent (`executor`, `chat`) resolves its provider and model from, in order: command-line flags, environment (`ZOOP_EXECUTOR_PROVIDER`, `ZOOP_EXECUTOR_MODEL`, `ZOOP_EXECUTOR_BASE_URL`), then `~/.zoop/config.json` (or the path in `ZOOP_CONFIG`):
+Each agent (`executor`, `planner`, `chat`) resolves its provider and model from, in order: command-line flags, environment (`ZOOP_EXECUTOR_PROVIDER`, `ZOOP_EXECUTOR_MODEL`, `ZOOP_EXECUTOR_BASE_URL`), then `~/.zoop/config.json` (or the path in `ZOOP_CONFIG`):
 
 ```json
 {
   "agents": {
-    "executor": { "provider": "gemini", "model": "<a model name from `zoop-agent models`>" },
+    "executor": { "provider": "gemini", "model": "<light model with tools and vision>" },
+    "planner": { "provider": "gemini", "model": "<stronger model with tools and vision>" },
     "chat": { "provider": "openrouter", "model": "<model name>" }
   },
   "providers": {
@@ -65,7 +71,13 @@ Each agent (`executor`, `chat`) resolves its provider and model from, in order: 
 }
 ```
 
-Keys in environment variables win over keys in the file. Keep the file private (`chmod 600 ~/.zoop/config.json`); never commit keys.
+The planner uses `ZOOP_PLANNER_PROVIDER`, `ZOOP_PLANNER_MODEL` and `ZOOP_PLANNER_BASE_URL`, or `agents.planner` in the file. A completely unconfigured planner falls back to the executor endpoint; this does not automatically select a stronger model. Configure both planner provider and model explicitly to use a different one. `--planner-provider`, `--planner-model` and `--planner-base-url` override the planner for one CLI invocation; general flags configure the executor and the unconfigured planner fallback.
+
+Claude (`anthropic`) uses Anthropic's Messages API through `AnthropicModel` (raw HTTP, API version `2026-10-21`); every other provider uses the OpenAI-compatible adapter. The Claude adapter marks the tools and system prompt for prompt caching (later calls read them at 0.1x the input price) and turns thinking off, because Zoop prunes old screenshots and tool output from earlier turns and Claude Haiku 5.5 rejects a thinking block whose earlier turns changed.
+
+Every model call is logged to `~/Zoop/logs/model-calls-YYYY-MM-DD.jsonl` (request sizes by part, billed tokens, cache use, requested tools, each HTTP attempt including rate-limit retries). `zoop-agent trace` summarizes recent runs; `--calls` lists every call. The log stays on this Mac (0600) and contains screen text.
+
+API keys are looked up in this order: environment variables, the macOS Keychain (service `com.zoop.provider-keys`, account = provider name), then a plain `apiKey` in the file. The app's Settings page (slider button in the notch header) adds, checks and changes keys in the Keychain and moves any plain `apiKey` it finds in the file into the Keychain. Turning a provider on there points all three agents at it with the chosen model; the agents reread the configuration for every request, so no restart is needed. Zoop is signed ad hoc, so after a rebuild, and the first time `zoop-agent` reads a key, macOS asks whether the program may use the Keychain item; choose Always Allow. Keep the file private (`chmod 600 ~/.zoop/config.json`); never commit keys.
 
 The executor needs a model that supports tool calling and image input. Small local models often struggle with long multi-step tool use.
 
@@ -82,7 +94,7 @@ Provider differences handled by the adapter:
 
 Each step:
 
-1. Sends the system prompt, the conversation and the tool list (the ten session tools plus three control tools) to the model.
+1. Sends the system prompt, the conversation and the tool list (the session tool catalog plus three control tools) to the model.
 2. Runs the requested tools one after another, in order, and appends one tool result per call.
 3. Sends screenshots back as a user message after the tool results, as JPEG, because OpenAI-compatible tool messages carry only text. Only the newest screenshot stays an image (`ExecutorLimits.keptScreenshots`, default 1); older ones become a short note so the conversation does not grow by an image every step.
 
@@ -98,20 +110,42 @@ The system prompt contains the tools' operating guide (`SessionTools.guide`) and
 
 Limits: 50 model calls per task by default. A reply without a tool call gets a reminder; after two in a row the task fails with the model's last text. Cancelling the calling Swift task stops between steps. Model errors end the task as failed with the error message.
 
+## Plan, execute and repair
+
+The selected design uses a stronger planner once, with a lighter executor for judgment and repairs. A plan stores the original request, a title and 1–20 steps. Each step has a readable summary and either an action tool with arguments or a decide goal. Tool details appear in the notch approval card’s expandable Plan details; the CLI prints both views. The notch allows one task at a time and starts it only after Execute the plan.
+
+Before planning, `PlannerAgent` captures a read-only screenshot. Its only callable session tools are read-only. Named clicks are accepted only after a successful `list_elements` for that app during the same planning session. The planner never launches an app: if an app is not running, it proposes open_app followed by a decide step for discovery after approval. Attempts to call a state-changing tool during planning are rejected without dispatch. Failed/invalid submissions return an error to the planner for correction within its default eight-call limit.
+
+Action steps use real tool names and named click targets, including inside batches. Stored coordinates are rejected. Any step that needs live geometry becomes a decide step; the executor can inspect and use current coordinates there. Whole-plan validation uses the toolbox's parameter/click/batch validation before any step executes. Invalid later actions therefore prevent earlier mutations too. A plan must end with a decide step for final verification and the answer/report.
+
+`PlanRunner.run(plan, approved: false)` executes nothing. After approval, it emits progress and runs known action steps through SessionToolbox directly, without a model call per action. Explicit tool errors or `verified: false` trigger repair. Clicks with `requires_observation` also enter a screenshot checkpoint immediately, before the next action; this is an observation, not a counted failure. Batches pause on such a click and include the sent click in `completed`. If the effect is absent, the executor uses open_app to focus the app, observes another screenshot, then explicitly tries strategy mouse at a visually located point. The runtime rejects mouse coordinates chosen before that image reached the model, rejects mouse recovery inside batches, and skips the remainder of a model response after an unconfirmed click. PID mouse delivery remains unconfirmed until checked; earlier background-session tests ignored these events, so focus-assisted recovery still needs live validation. Setup/permission failures stop the run instead of spending calls on model repairs.
+
+Before a repair or decide session, the runner takes a fresh screenshot and supplies the original request, completed-step observations, current step and any failed result. A partial batch's completed count is included; the runner never automatically resends the batch or completed prefix. The assistant is instructed to inspect ambiguous results before acting and to complete only the current step. It returns with step_done so the Swift runner can continue. Success through finish_task is accepted only in the final verification session; failures can end the task earlier. A shared model-call budget spans all assistance sessions. The existing free-form executor and the new runner share the same message/image/tool-call engine, preserving provider echoes and screenshot pruning.
+
+Steps marked confirm require an explicit yes immediately before running, in addition to initial task approval. Empty/negative answers cancel. The planner is instructed to flag hard-to-undo actions; repair/decision models retain ask_user rules for new risky actions. This is an application boundary and prompt policy, not a claim that a model can classify every risky action perfectly.
+
+Planner and executor call/token usage are printed separately. Scripted tests prove that two direct actions plus final verification use one executor call, and that repairs resume without automatic replay. The earlier live benchmark table above is from free-form execution; the new architecture has not yet been benchmarked against a paid model. Do not infer a measured token reduction from the scripted call count.
+
 ## Command line
 
 ```bash
 swift run zoop-agent config                     # which provider/model each agent uses (keys hidden)
 swift run zoop-agent models --provider gemini   # model names your key offers
 swift run zoop-agent hello                      # one short request to check provider, key and model
-swift run zoop-agent run "Open Calculator and compute 12 × 34" --save frames/run
-swift run zoop-agent run "Compare three mechanical keyboards" --step "Search reviews" --step "Write a comparison"
+swift run zoop-agent plan "Open Calculator and compute 12 × 34" # observations only
+swift run zoop-agent run "Open Calculator and compute 12 × 34" --save frames/planned-run
+swift run zoop-agent run "Open Calculator and compute 91 × 47" --approve # explicit plan approval
+swift run zoop-agent run "Compare three mechanical keyboards" --no-plan --step "Search reviews" --step "Write a comparison"
 ```
 
-`--provider`, `--model` and `--base-url` override the configuration for one command. `run` asks `ask_user` questions on the terminal. Ctrl-C stops after the current step. `--save DIR` keeps every screenshot. The helper must be running in the agent session (`zoop-bridge status`).
+`--provider`, `--model` and `--base-url` override the configuration for one command. `plan` rejects `--approve` and `--no-plan` so it always stays read-only. `run` prints the proposed readable steps and their tool details, then waits for an explicit yes. EOF or any other response cancels. `--approve` supplies initial plan approval for automation; it does not bypass confirmation on risky steps. `--no-plan` retains the previous free-form executor. `--step` is only supported with `--no-plan`. `run` asks `ask_user` questions on the terminal. Ctrl-C stops after the current step. `--save DIR` keeps every screenshot. The helper must be running in the agent session (`zoop-bridge status`).
 
-## Next
+## Native chat and execution
 
-- Chat agent: conversation and plan proposals for the approval card.
-- `ClaudeCompanionService` replacement: a provider-neutral `CompanionService` that uses the chat agent and the executor, feeding `AgentEvent` into the notch and live activities.
-- A `fetch_url` tool (download a page's readable text) for research without driving Safari.
+ChatAgent handles ordinary conversation using the chat role. It exposes only plan_task, not desktop tools. A valid handoff produces a grounded plan via the planner role. LiveCompanionService returns that proposal to the notch, which persists the typed plan and waits for the button. Normal conversation can continue while a plan is pending; a revised proposal replaces the pending one. During execution the composer is disabled. The executor role is resolved only when execution starts, and AgentEvent feeds actual progress, screenshots and in-app questions into the UI. Completed outcomes export actual reports/summaries; failures do not produce sample research. No queue or pause/resume system is included in the base version.
+
+See [NativeNotch.md](NativeNotch.md) for setup, persistence and base-version validation. A future fetch_url tool could supply readable page text for research without driving Safari.
+
+## System permission interruption
+
+Native execution wraps SessionToolbox in PermissionToolRunner. Before tools and after actions, it queries recognized system permission windows through the bridge. A pending dialog awaits UserPrompting.choosePermission with its exact observed choices, independently of the executor and its Auto mode. The UI returns only the selected opaque choice identity; the helper revalidates and performs it once. No permission-choice tool is declared to the model. Cancellation, stale identities, interrupted actions and unconfirmed presses cannot become implicit Allow responses. CLI compatibility uses the prompter's numbered/exact-label fallback when this wrapper is used; the native service wires it by default.

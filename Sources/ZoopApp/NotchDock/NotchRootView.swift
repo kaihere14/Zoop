@@ -51,6 +51,8 @@ struct NotchRootView: View {
     @State private var controlFrames: [String: CGRect] = [:]
     @State private var flights: [PaperFlight] = []
     @State private var pulse = false
+    @State private var providers = ProviderSettingsStore()
+    @AppStorage(GlassSettings.intensityKey) private var glassIntensity = GlassSettings.defaultIntensity
 
     private var expanded: Bool { store.isExpanded }
     private var activities: Bool { store.destination == .activities }
@@ -58,14 +60,14 @@ struct NotchRootView: View {
     private var height: CGFloat { metrics.mainHeight(expanded: expanded, activities: activities) }
     private var flare: CGFloat { expanded ? NotchMetrics.expandedFlare : NotchMetrics.collapsedFlare }
     private var radius: CGFloat { expanded ? 28 : 14 }
-    private var morph: Animation { reduceMotion ? .easeOut(duration: 0.12) : ZoopTheme.island }
+    private var morph: Animation { reduceMotion ? .easeOut(duration: 0.12) : expanded ? ZoopTheme.island : ZoopTheme.islandClose }
 
     var body: some View {
         VStack(spacing: 0) {
             island
             if expanded {
                 underbar.frame(width: width, height: NotchMetrics.underbarHeight)
-                    .transition(reduceMotion ? .opacity : .notchContent(delay: 0.12))
+                    .transition(reduceMotion ? .opacity : .notchContent(delay: 0.08))
             }
         }
         .frame(width: metrics.windowSize.width, height: metrics.windowSize.height, alignment: .top)
@@ -85,7 +87,7 @@ struct NotchRootView: View {
         .animation(morph, value: store.completionAlert?.id)
         .preferredColorScheme(.dark)
         .onChange(of: store.isExpanded) {
-            if store.isExpanded { store.recordInteraction(); store.dismissCompletionAlerts() }
+            if store.isExpanded { store.recordInteraction(); store.dismissCompletionAlerts() } else if store.destination == .settings { store.destination = .chat }
             onStateChange()
         }
         .onChange(of: store.completionAlert?.id) { onStateChange() }
@@ -108,16 +110,19 @@ struct NotchRootView: View {
             if expanded {
                 ZStack(alignment: .top) {
                     Group {
-                        if activities { LiveActivitiesView(store: store) }
-                        else { ChatView(store: store, onStart: dispatch) }
+                        switch store.destination {
+                        case .activities: LiveActivitiesView(store: store)
+                        case .settings: SettingsView(store: store, providers: providers, glassIntensity: $glassIntensity)
+                        case .chat: ChatView(store: store, onStart: dispatch)
+                        }
                     }
                     .padding(.top, metrics.hardwareHeight + 46)
-                    .transition(reduceMotion ? .opacity : .notchContent(delay: 0.04))
+                    .transition(reduceMotion ? .opacity : .notchContent(delay: 0.02))
                     header.padding(.top, metrics.hardwareHeight)
                 }
                 .padding(.horizontal, NotchMetrics.contentInset)
                 .frame(width: metrics.expandedWidth, height: metrics.mainHeight(expanded: true, activities: activities), alignment: .top)
-                .transition(reduceMotion ? .opacity : .notchContent(delay: 0.08))
+                .transition(reduceMotion ? .opacity : .notchContent(delay: 0.05))
             } else {
                 Button { store.isExpanded = true } label: {
                     HStack(spacing: 0) {
@@ -146,7 +151,7 @@ struct NotchRootView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).accessibilityLabel("Open Zoop")
-                .transition(.opacity.animation(.easeOut(duration: expanded ? 0.1 : 0.25).delay(expanded ? 0 : 0.12)))
+                .transition(.opacity.animation(.easeOut(duration: expanded ? 0.1 : 0.2).delay(expanded ? 0 : 0.08)))
             }
             Color.black
                 .frame(width: metrics.hardwareWidth, height: metrics.hardwareHeight)
@@ -158,7 +163,7 @@ struct NotchRootView: View {
         }
         .frame(width: width, height: height, alignment: .top)
         .clipShape(NotchShape(flare: flare, radius: radius))
-        .background(LiquidGlass(expanded: expanded, working: store.workingTask != nil, flare: flare, radius: radius))
+        .background(LiquidGlass(expanded: expanded, working: store.workingTask != nil, flare: flare, radius: radius, intensity: glassIntensity))
         .overlay(alignment: .topLeading) {
             ForEach(flights) { flight in
                 FlyingPaperTicket(flight: flight, reduceMotion: reduceMotion) {
@@ -213,6 +218,11 @@ struct NotchRootView: View {
             }
             .buttonStyle(.plain).scaleEffect(pulse ? 1.12 : 1)
             .zoopControlFrame("live-activities")
+            Button { store.destination = store.destination == .settings ? .chat : .settings } label: {
+                Image(systemName: "slider.horizontal.3").font(.system(size: 12))
+                    .foregroundStyle(store.destination == .settings ? ZoopTheme.lime : ZoopTheme.secondary).padding(5)
+            }
+            .buttonStyle(.plain).accessibilityLabel(store.destination == .settings ? "Close settings" : "Open settings")
             Button { store.isExpanded = false } label: { Image(systemName: "chevron.up").font(.system(size: 12)).foregroundStyle(ZoopTheme.secondary).padding(5) }
                 .buttonStyle(.plain).accessibilityLabel("Minimize Zoop")
         }
@@ -232,7 +242,7 @@ struct NotchRootView: View {
             Spacer(minLength: 8)
             Button { store.revealExports() } label: { Image(systemName: "folder").font(.system(size: 11)) }.accessibilityLabel("Open exports folder")
             Button { store.toggleSound() } label: { Image(systemName: store.soundEnabled ? "speaker.wave.2" : "speaker.slash").font(.system(size: 11)) }.accessibilityLabel(store.soundEnabled ? "Mute sounds" : "Enable sounds")
-            Button { store.reset() } label: { Image(systemName: "arrow.counterclockwise").font(.system(size: 10)) }.accessibilityLabel("Reset demo")
+            Button { store.reset() } label: { Image(systemName: "arrow.counterclockwise").font(.system(size: 10)) }.accessibilityLabel("Clear conversation")
         }.buttonStyle(.plain).foregroundStyle(ZoopTheme.secondary).padding(.horizontal, 20 + NotchMetrics.expandedFlare)
     }
 

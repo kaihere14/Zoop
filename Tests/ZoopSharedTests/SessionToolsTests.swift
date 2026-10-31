@@ -58,6 +58,22 @@ import Testing
         #expect(value.jsonText == #"{"a":[1,2.5,"x",true,null],"b":{"c":false}}"#)
     }
 
+    @Test func visualMouseRecoveryNeedsAPointAndAnAppAndCannotBeBatched() throws {
+        try SessionToolbox.validateCall(.click, arguments: ["x": 12, "y": 34, "bundle_id": "test.app", "strategy": "mouse"])
+        for args: JSONValue in [
+            ["x": 12, "y": 34, "strategy": "mouse"],
+            ["bundle_id": "test.app", "element": "Send", "strategy": "mouse"],
+            ["x": 12, "y": 34, "bundle_id": "test.app", "element": "Send", "strategy": "mouse"],
+        ] {
+            #expect(throws: (any Error).self) { try SessionToolbox.validateCall(.click, arguments: args) }
+        }
+        #expect(throws: (any Error).self) {
+            try SessionToolbox.validateCall(.batch, arguments: ["actions": [
+                ["tool": "click", "x": 12, "y": 34, "bundle_id": "test.app", "strategy": "mouse"],
+            ]])
+        }
+    }
+
     @Test func failuresMapToStableCodesRetryRulesAndNextSteps() {
         func content(_ error: Error, readOnly: Bool = false) -> JSONValue {
             SessionToolbox.failure("click", error, readOnly: readOnly).content

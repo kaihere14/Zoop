@@ -11,15 +11,25 @@ commands:
   config              show which provider and model each agent resolves to (keys hidden)
   models              list the model names your provider and key offer
   hello               send one short request to check the provider, key and model
-  run TASK            let the executor carry out TASK in the agent session
-      --step TEXT       add a plan step (repeatable); without steps the executor plans itself
+  trace               summarize logged model calls: tokens, retries, tools per run
+      --runs N          how many recent runs to show (default 5)
+      --calls           list every model call of those runs
+      --file PATH       read another log (default: today's in ~/Zoop/logs)
+  plan TASK           inspect read-only and print a proposed executable plan
+  run TASK            propose a plan, ask for approval, then execute it
+      --approve         approve the displayed task plan (risky-step confirmations still apply)
+      --auto            Auto mode: actions the plan lists need no further confirmation
+      --no-plan         use the previous free-form executor
+      --step TEXT       add a plain-language hint to --no-plan (repeatable)
       --max-steps N     model calls before giving up (default 50)
       --save DIR        save every screenshot the executor takes into DIR
 
 model options (override env and ~/.zoop/config.json):
-  --provider NAME     gemini, openrouter, groq, openai, ollama, lmstudio or custom
+  --provider NAME     anthropic, gemini, openrouter, groq, openai, ollama, lmstudio or custom
   --model NAME        model name as the provider spells it
   --base-url URL      endpoint for custom providers
+  --planner-provider NAME / --planner-model NAME / --planner-base-url URL
+                      optional separate planner; defaults to executor when unconfigured
 
 The executor asks before risky steps; answer on this terminal.
 """
@@ -31,6 +41,14 @@ struct Options {
     var maxSteps = 50
     var save: String?
     var overrides = ModelConfiguration.Overrides()
+    var plannerOverrides = ModelConfiguration.Overrides()
+    var approve = false
+    var auto = false
+    var noPlan = false
+    var traceRuns = 5
+    var traceCalls = false
+    var traceFile: String?
+
 }
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
@@ -48,11 +66,20 @@ func parse() -> Options {
     }
     while let argument = arguments.next() {
         switch argument {
+        case "--approve": options.approve = true
+        case "--auto": options.auto = true
+        case "--no-plan": options.noPlan = true
+        case "--planner-provider": options.plannerOverrides.provider = value(argument)
+        case "--planner-model": options.plannerOverrides.model = value(argument)
+        case "--planner-base-url": options.plannerOverrides.baseURL = value(argument)
         case "--step": options.steps.append(value(argument))
         case "--max-steps":
             guard let n = Int(value(argument)), n > 0 else { fail("--max-steps needs a positive number", code: 64) }
             options.maxSteps = n
         case "--save": options.save = value(argument)
+        case "--runs": options.traceRuns = Int(value(argument)) ?? 5
+        case "--calls": options.traceCalls = true
+        case "--file": options.traceFile = value(argument)
         case "--provider": options.overrides.provider = value(argument)
         case "--model": options.overrides.model = value(argument)
         case "--base-url": options.overrides.baseURL = value(argument)
@@ -61,6 +88,9 @@ func parse() -> Options {
             if argument.hasPrefix("--") { fail("unknown option '\(argument)'", code: 64) }
             if options.command.isEmpty { options.command = argument } else { options.positional.append(argument) }
         }
+    }
+    if options.command == "plan", options.noPlan || options.approve || !options.steps.isEmpty {
+        fail("plan is read-only and does not accept --no-plan, --approve or --step", code: 64)
     }
     return options
 }
@@ -86,7 +116,7 @@ let configuration = ModelConfiguration()
 switch options.command {
 case "config":
     print("config file: \(ModelConfiguration.configPath())")
-    for role in [AgentRole.executor, .chat] {
+    for role in [AgentRole.executor, .planner, .chat] {
         do {
             let endpoint = try configuration.endpoint(for: role, overrides: options.overrides)
             print("\(role.rawValue): \(endpoint.provider) / \(endpoint.model) at \(endpoint.baseURL.absoluteString), key \(endpoint.apiKey?.isEmpty == false ? "set" : "none")")
@@ -98,12 +128,16 @@ case "config":
 case "models":
     do {
         let endpoint = try configuration.endpoint(for: .executor, overrides: options.overrides, requireModel: false)
-        let names = try await OpenAICompatibleModel.listModels(endpoint)
+        let names = try await ModelConfiguration.listModels(endpoint)
         print("\(names.count) models from \(endpoint.provider):")
         for name in names { print("  \(name)") }
     } catch {
         fail("\(error)")
     }
+
+case "trace":
+    let file = options.traceFile.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? ModelTrace.file()
+    TraceReport.print(file: file, runs: options.traceRuns, detail: options.traceCalls)
 
 case "hello":
     do {
@@ -117,24 +151,46 @@ case "hello":
         fail("\(error)")
     }
 
-case "run":
+case "run", "plan":
     guard options.positional.count == 1 else { fail("run needs the task as one quoted argument", code: 64) }
     let model: any ChatModel
-    do { model = try configuration.model(for: .executor, overrides: options.overrides) } catch { fail("\(error)") }
+    do {
+        if options.command == "plan" {
+            let specific = options.plannerOverrides
+            let hasOverrides = specific.provider != nil || specific.model != nil || specific.baseURL != nil
+            model = try configuration.model(for: .planner, overrides: hasOverrides ? specific : options.overrides)
+        } else { model = try configuration.model(for: .executor, overrides: options.overrides) }
+    } catch { fail("\(error)") }
     if let save = options.save { try? FileManager.default.createDirectory(atPath: save, withIntermediateDirectories: true) }
 
     let connection = HelperConnection(configuration: .init(clientName: "zoop-agent"))
-    let agent = ExecutorAgent(model: model, tools: SessionToolbox(connection: connection), prompter: TerminalPrompter(),
-                              limits: ExecutorLimits(maxSteps: options.maxSteps))
+    let tools = SessionToolbox(connection: connection)
+    let prompter = TerminalPrompter()
+    let limits = ExecutorLimits(maxSteps: options.maxSteps)
+    guard options.noPlan || options.steps.isEmpty else { fail("--step is for --no-plan; structured plans are generated from TASK", code: 64) }
+    let plannerModel: any ChatModel
+    do {
+        // General flags also configure the fallback planner; explicit planner configuration
+        // keeps its separate provider/model. No key is printed or copied to the plan.
+        let plannerOptions = options.plannerOverrides
+        if options.noPlan || options.command == "plan" { plannerModel = model }
+        else if plannerOptions.provider == nil && plannerOptions.model == nil && plannerOptions.baseURL == nil,
+           ProcessInfo.processInfo.environment["ZOOP_PLANNER_PROVIDER"] == nil,
+           ProcessInfo.processInfo.environment["ZOOP_PLANNER_MODEL"] == nil,
+           !configuration.hasPlannerConfiguration { plannerModel = model }
+        else { plannerModel = try configuration.model(for: .planner, overrides: plannerOptions) }
+    } catch { fail("\(error)") }
+
     let saveDirectory = options.save
     let counter = Counter()
 
     // Ctrl-C stops between steps instead of killing the process mid-action.
     signal(SIGINT, SIG_IGN)
-    let run = Task {
-        await agent.run(ExecutorTask(request: options.positional[0], plan: options.steps)) { event in
+    let traceContext = TraceContext(label: "cli \(options.command): " + String(options.positional[0].prefix(80)))
+    let run = Task { await ModelTrace.$context.withValue(traceContext) {
+        let events: @Sendable (AgentEvent) -> Void = { event in
             switch event {
-            case .started(let name): print("executor on \(name)")
+            case .started(let name): print("agent on \(name)")
             case .step(let number): print("\n[model call \(number)]")
             case .thought(let text): print("\n·  \(short(text, 400))")
             case .toolStarted(let name, let arguments): print("→  \(name) \(short(arguments, 160))")
@@ -156,7 +212,36 @@ case "run":
                 if let report = outcome.report { print("\n--- report ---\n\(report)") }
             }
         }
-    }
+        let executionTools = PermissionToolRunner(tools: tools, permissions: connection, prompter: prompter, onEvent: events)
+        if options.noPlan {
+            return await ExecutorAgent(model: model, tools: executionTools, prompter: prompter, limits: limits)
+                .run(ExecutorTask(request: options.positional[0], plan: options.steps), onEvent: events)
+        }
+        do {
+            print("planning on \(plannerModel.name)")
+            let proposed = try await PlannerAgent(model: plannerModel, tools: tools).plan(options.positional[0], onEvent: events)
+            print("\nPROPOSED PLAN: \(proposed.plan.title)")
+            for (index, step) in proposed.plan.steps.enumerated() {
+                print("  \(index + 1). \(step.summary)\(step.requiresConfirmation ? " [confirmation required]" : "")")
+                if let tool = step.tool { print("     \(tool.rawValue) \(step.arguments.jsonText)") }
+                else { print("     decide: \(step.goal)") }
+            }
+            print("Planner: \(proposed.modelCalls) calls, \(proposed.usage.inputTokens) input + \(proposed.usage.outputTokens) output tokens")
+            if options.command == "plan" {
+                return AgentOutcome(status: .completed, summary: "Plan proposed; no actions executed.", steps: proposed.modelCalls, usage: proposed.usage)
+            }
+            let approved: Bool
+            if options.approve { approved = true }
+            else { approved = PlanRunner.isApproval(await prompter.ask("Run this plan in the agent session? Reply yes to approve.") ?? "") }
+            return await PlanRunner(model: model, tools: executionTools, prompter: prompter, limits: limits)
+                .run(proposed.plan, approved: approved, mode: options.auto ? .auto : .ask, onEvent: events)
+        } catch {
+            let cancelled = Task.isCancelled || error is CancellationError
+            print("\(cancelled ? "CANCELLED" : "FAILED"): \(error)")
+            return AgentOutcome(status: cancelled ? .cancelled : .failed, summary: String(describing: error), steps: 0,
+                                usage: ModelUsage(inputTokens: 0, outputTokens: 0))
+        }
+    } }
     let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
     interrupt.setEventHandler {
         print("\nstopping after the current step…")

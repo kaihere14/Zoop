@@ -15,7 +15,11 @@ import Testing
         .inspect(point: Point(x: 10.5, y: 20)),
         .elements(query: ElementQuery(bundleID: "test.app", interactiveOnly: false, limit: 25)),
         .openApp(bundleID: "test.app"),
+        .permissionPrompts,
+        .appDialogs(bundleID: "com.apple.TextEdit"),
+        .respondToPermission(promptID: "observed-dialog", choiceID: "exact-choice"),
         .input(action: .click(ClickAction(point: Point(x: 1, y: 2), button: .right, count: 2))),
+        .input(action: .click(ClickAction(point: Point(x: 10, y: 20), strategy: .mouse, bundleID: "test.app"))),
         .input(action: .type(text: "héllo 🌍\n\t")),
         .input(action: .setText(SetTextAction(text: "replacement", point: Point(x: 1, y: 2)))),
         .input(action: .key(KeyCombo(key: "a", modifiers: [.command]))),
@@ -25,6 +29,11 @@ import Testing
         let envelope = RequestEnvelope(id: 9, request: request)
         let decoded = try WireCoding.decode(RequestEnvelope.self, from: WireCoding.encode(envelope))
         #expect(decoded == envelope)
+    }
+
+    @Test func olderClickPayloadDefaultsToAccessibility() throws {
+        let click = try JSONDecoder().decode(ClickAction.self, from: Data(#"{"point":{"x":1,"y":2},"button":"left","count":1}"#.utf8))
+        #expect(click.strategy == .accessibility && click.bundleID == nil)
     }
 
     @Test func responsesRoundTrip() throws {
@@ -75,7 +84,11 @@ import Testing
         #expect(HelperRequest.inspect(point: Point(x: 1, y: 2)).isReplayable)
         #expect(HelperRequest.elements(query: ElementQuery(bundleID: "test.app")).isReplayable)
         #expect(!HelperRequest.openApp(bundleID: "test.app").isReplayable)
+        #expect(HelperRequest.permissionPrompts.isReplayable)
+        #expect(HelperRequest.appDialogs(bundleID: "com.apple.TextEdit").isReplayable)
+        #expect(!HelperRequest.respondToPermission(promptID: "dialog", choiceID: "allow").isReplayable)
         for action in [InputAction.click(ClickAction(point: Point(x: 1, y: 2))), .type(text: "x"),
+                       .click(ClickAction(point: Point(x: 1, y: 2), strategy: .mouse, bundleID: "test.app")),
                        .setText(SetTextAction(text: "x")), .key(KeyCombo(key: "return")),
                        .scrollTo(ScrollToAction(point: Point(x: 1, y: 2), fraction: 1))] {
             #expect(!HelperRequest.input(action: action).isReplayable)

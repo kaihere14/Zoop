@@ -21,6 +21,7 @@ let package = Package(
         .executableTarget(name: "ZoopBridgeCLI", dependencies: ["ZoopShared"]),
         // Runs the agents from a terminal, for testing the AI layer without the app.
         .executableTarget(name: "ZoopAgentCLI", dependencies: ["ZoopAgents", "ZoopShared"]),
+        .testTarget(name: "ZoopAppTests", dependencies: ["ZoopApp", "ZoopAgents", "ZoopShared"]),
         .testTarget(name: "ZoopSharedTests", dependencies: ["ZoopShared"]),
         .testTarget(name: "ZoopAgentsTests", dependencies: ["ZoopAgents", "ZoopShared"]),
         .testTarget(name: "ZoopHelperTests", dependencies: ["ZoopHelper", "ZoopShared"]),

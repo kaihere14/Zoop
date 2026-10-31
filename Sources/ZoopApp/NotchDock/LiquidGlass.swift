@@ -30,23 +30,31 @@ struct NotchShape: Shape {
     }
 }
 
-/// Background of the island. Collapsed it is solid black so it reads as part of the hardware notch;
-/// expanded it becomes dark glass. SwiftUI draws the material and shadow, so both follow the rounded
-/// shape exactly (an AppKit window shadow or NSVisualEffectView would stay rectangular).
+/// Background of the island. Collapsed it is solid black so it reads as part of the hardware notch.
+/// Expanded it is clear Liquid Glass under a black gradient: pitch black at the top, where it meets the
+/// hardware notch and the header, fading to a light tint at the bottom so the desktop shows through
+/// while text stays readable. SwiftUI draws the glass and shadow, so both follow the rounded shape
+/// exactly (an AppKit window shadow or NSVisualEffectView would stay rectangular).
 struct LiquidGlass: View {
     var expanded: Bool
     var working: Bool
     var flare: CGFloat
     var radius: CGFloat
+    /// 0 is nearly solid black, 1 is the clearest glass. Set from the settings panel.
+    var intensity: Double = GlassSettings.defaultIntensity
 
     var body: some View {
         let shape = NotchShape(flare: flare, radius: radius)
+        // `dark` is how much black tint sits over the glass below the header; the top always stays pitch black.
+        let dark = 1 - min(1, max(0, intensity))
         ZStack {
-            Rectangle().fill(.ultraThinMaterial)
+            Color.clear.glassEffect(.clear, in: shape)
             LinearGradient(stops: [
                 .init(color: .black, location: 0),
-                .init(color: Color(red: 0.02, green: 0.02, blue: 0.03).opacity(0.98), location: 0.12),
-                .init(color: Color(red: 0.06, green: 0.07, blue: 0.09).opacity(0.78), location: 1),
+                .init(color: .black, location: 0.14),
+                .init(color: .black.opacity(0.62 + 0.33 * dark), location: 0.38),
+                .init(color: .black.opacity(0.32 + 0.6 * dark), location: 0.7),
+                .init(color: .black.opacity(0.2 + 0.7 * dark), location: 1),
             ], startPoint: .top, endPoint: .bottom)
             Color.black.opacity(expanded ? 0 : 1)
         }
@@ -55,18 +63,32 @@ struct LiquidGlass: View {
             NotchShape(flare: flare, radius: radius, closed: false)
                 .stroke(LinearGradient(stops: [
                     .init(color: .white.opacity(0), location: 0),
-                    .init(color: .white.opacity(0), location: 0.25),
-                    .init(color: .white.opacity(0.07), location: 0.7),
-                    .init(color: ZoopTheme.lime.opacity(0.1), location: 1),
+                    .init(color: .white.opacity(0), location: 0.2),
+                    .init(color: .white.opacity(0.12), location: 0.65),
+                    .init(color: ZoopTheme.lime.opacity(0.14), location: 1),
                 ], startPoint: .top, endPoint: .bottom), lineWidth: 1)
                 .opacity(expanded ? 1 : 0)
         )
         .background(
+            // The shadow needs a filled shape to cast from, but a fill under the glass would be all the
+            // glass shows. The mask cuts the fill out, leaving only the shadow outside the island.
             shape.fill(.black)
                 .shadow(color: .black.opacity(expanded ? 0.45 : 0), radius: 24, y: 12)
                 .shadow(color: ZoopTheme.lime.opacity(expanded ? (working ? 0.14 : 0.05) : 0), radius: 26, y: 20)
+                .mask {
+                    ZStack {
+                        Rectangle().padding(-80)
+                        shape.blendMode(.destinationOut)
+                    }.compositingGroup()
+                }
         )
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
+}
+
+enum GlassSettings {
+    static let intensityKey = "glassIntensity"
+    /// Noticeably more solid than fully clear glass, so text reads well on bright wallpapers.
+    static let defaultIntensity = 0.45
 }

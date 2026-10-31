@@ -16,11 +16,19 @@ struct ZoopApplication {
 final class ZoopAppDelegate: NSObject, NSApplicationDelegate {
     private let store = CompanionStore()
     private var notch: NotchPanelController?
+    private var questionNotifier: QuestionNotifier?
+    private var sessionPreview: SessionPreviewWindowController?
     private var statusItem: NSStatusItem?
     private var aboveFullscreen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
+        let notifier = QuestionNotifier(store: store)
+        questionNotifier = notifier
+        store.notifier = notifier
+        let preview = SessionPreviewWindowController(store: store)
+        sessionPreview = preview
+        store.onExpandPreview = { [weak preview] taskID in preview?.show(taskID: taskID) }
         let controller = NotchPanelController(store: store)
         notch = controller
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -39,7 +47,10 @@ final class ZoopAppDelegate: NSObject, NSApplicationDelegate {
         controller.show()
     }
 
-    func applicationWillTerminate(_ notification: Notification) { notch?.shutdown(); store.shutdown() }
+    func applicationWillTerminate(_ notification: Notification) {
+        sessionPreview?.close(); store.onExpandPreview = nil
+        notch?.shutdown(); store.shutdown()
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     @objc private func statusClicked(_ sender: Any?) {
@@ -54,7 +65,7 @@ final class ZoopAppDelegate: NSObject, NSApplicationDelegate {
             let level = item("Float above full-screen apps", #selector(toggleLevel), key: "")
             level.state = aboveFullscreen ? .on : .off
             menu.addItem(level)
-            menu.addItem(item("Reset demo conversation", #selector(resetDemo), key: ""))
+            menu.addItem(item("Clear conversation", #selector(resetDemo), key: ""))
             menu.addItem(.separator())
             menu.addItem(item("About Zoop", #selector(showAbout), key: ""))
             menu.addItem(item("Quit Zoop", #selector(quit), key: "q"))
@@ -98,7 +109,7 @@ final class ZoopAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Your Mac has room for two."
-        alert.informativeText = "Zoop native UI preview\n\nChat, plans, task controls, exports, and the notch run natively in SwiftUI and AppKit. Research and the isolated desk use sample data. No other apps are controlled."
+        alert.informativeText = "Zoop base version\n\nChat normally, review a proposed plan, and choose Execute the plan. Approved tasks run inside the separate agent session. Models are configured in ~/.zoop/config.json."
         alert.addButton(withTitle: "Nice")
         alert.runModal()
     }

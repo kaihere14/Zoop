@@ -50,10 +50,16 @@ public enum SessionTools {
     before relying on it.
 
     What works, and how:
-    - Clicking uses Accessibility only: buttons, links, menu items, sidebar rows and other controls \
-    that support AXPress are pressed; text fields are focused. Right click opens an element's context \
-    menu. Double click works only on elements that advertise AXOpen. There is no mouse-event \
-    fallback, because apps in a background session ignore synthetic mouse events.
+    - Clicking defaults to Accessibility: press controls with AXPress, or focus text fields. \
+    AX errors can occur after a click took effect. For an unsuccessful or unconfirmed click, inspect \
+    a fresh screenshot first. If the intended effect is already visible, continue without retrying. \
+    Otherwise call open_app to focus/raise the target app inside the agent session, screenshot again \
+    (focus can change what is visible), locate the control visually, and use click with strategy \
+    mouse plus x, y and bundle_id. This sends down/up events only to that app's visible window, \
+    bypassing AXPress. Background apps may ignore mouse events: check the next screenshot; never \
+    assume success or repeat blindly. Use keyboard navigation if this approach also fails. \
+    An unconfirmed click ends the current batch; completed includes that sent click. Check it, then \
+    execute only the remaining actions. Never replay the whole batch.
     - Text: click a text field to focus it, then `type_text`. To replace a field's whole content \
     exactly, use `set_text`, which is verified. Apps may autocorrect typed text; `set_text` avoids that.
     - Keys and shortcuts: `press_key` (cmd+l, cmd+a, return, tab, escape, arrows, pageup, pagedown). \
@@ -141,20 +147,21 @@ public enum SessionTools {
         case .click:
             return ToolDefinition(
                 name: name,
-                summary: "Click an element, using Accessibility.",
-                usage: "Target it either by point (`x`, `y`) or by name (`bundle_id` plus `element`, the name list_elements shows, such as \"7\" or \"Equals\"); naming avoids coordinate mistakes. Left click presses buttons, links, menu items, sidebar rows and other controls that support AXPress, and focuses text fields so type_text and press_key go to them. `button: right` opens the element's context menu; it appears after about a second, at the element's caret rather than the point, so wait before the screenshot. Close it with press_key escape. `double: true` works only on elements that advertise AXOpen. The helper checks the element at the point and up to five containers for a matching action.",
+                summary: "Click through Accessibility, or explicitly try a PID-targeted mouse click at a screenshot position.",
+                usage: "Target it either by point (`x`, `y`) or by name (`bundle_id` plus `element`, the name list_elements shows, such as \"7\" or \"Equals\"); naming avoids coordinate mistakes. Left click presses buttons, links, menu items, sidebar rows and other controls that support AXPress, and focuses text fields so type_text and press_key go to them. `button: right` opens the element's context menu; it appears after about a second, at the element's caret rather than the point, so wait before the screenshot. Close it with press_key escape. `double: true` works only on elements that advertise AXOpen. The helper checks the element at the point and up to five containers for a matching action. Named clicks bring the app forward first. For visual recovery use strategy mouse with x, y and bundle_id after open_app and a fresh screenshot. Mouse clicks bypass AXPress and remain unconfirmed until inspected; never fall back blindly after an AX error.",
                 parameters: [
                     ToolParameter("x", .number, "Horizontal position in screen points. Give x and y, or bundle_id and element.", required: false, minimum: 0),
                     ToolParameter("y", .number, "Vertical position in screen points.", required: false, minimum: 0),
-                    ToolParameter("bundle_id", .string, "App that owns the element, when clicking by name.", required: false),
+                    ToolParameter("bundle_id", .string, "App that owns the element; required for named targets and strategy mouse.", required: false),
                     ToolParameter("element", .string, "Element name exactly as list_elements shows it (title or label), when clicking by name.", required: false),
+                    ToolParameter("strategy", .string, "Use accessibility first; mouse is an explicit visual retry with x, y and bundle_id (no element), after open_app and a fresh screenshot.", required: false, allowed: ["accessibility", "mouse"], defaultValue: "accessibility"),
                     ToolParameter("button", .string, "Mouse button.", required: false, allowed: ["left", "right"], defaultValue: "left"),
                     ToolParameter("double", .boolean, "Double click (left button only).", required: false, defaultValue: false),
                 ],
-                returns: "`method` (axPress, axFocus, axShowMenu or axOpen), the `target` element, `verified` (true when a focus was confirmed, otherwise null) and `next`.",
+                returns: "`method` (axPress, axFocus, axShowMenu, axOpen or pidMouse), the `target` when available, `verified` (true when focus was confirmed, otherwise null), `requires_observation` for unconfirmed clicks, and `next`.",
                 failures: ["`unsupported`: nothing there accepts this click, or several elements share that name; the message says which. Pick another element from list_elements, click by point, or reach the control with the keyboard (press_key).",
                            "`not_found`: nothing at that point, or no on-screen element with that name (the message lists similar names).",
-                           needsAccessibility, mayHaveRun],
+                           needsPostEvent, mayHaveRun],
                 isReadOnly: false)
         case .typeText:
             return ToolDefinition(
@@ -207,9 +214,9 @@ public enum SessionTools {
             return ToolDefinition(
                 name: name,
                 summary: "Run several actions in order with one call.",
-                usage: "Use it for steps that do not need a look at the screen in between, such as pressing a known sequence of buttons or filling several fields. Each action names its `tool` (click, type_text, set_text, press_key, scroll_to or open_app) and that tool's arguments as sibling fields, for example {\"tool\": \"click\", \"bundle_id\": \"com.apple.calculator\", \"element\": \"7\"}. All actions are checked before any runs. They run in order and stop at the first failure or at a `verified: false` result. Take a screenshot afterwards to confirm the final state.",
+                usage: "Use it for steps that do not need a look at the screen in between, such as pressing a known sequence of buttons or filling several fields. Each action names its `tool` (click, type_text, set_text, press_key, scroll_to or open_app) and that tool's arguments as sibling fields, for example {\"tool\": \"click\", \"bundle_id\": \"com.apple.calculator\", \"element\": \"7\"}. All actions are checked before any runs. They run in order and stop at the first failure, `verified: false`, or unconfirmed click (`requires_observation`). After an unconfirmed click, `completed` includes that sent click; inspect it before continuing only the remaining actions. Mouse recovery must be a separate call, never a batch item. Take a screenshot afterwards to confirm the final state.",
                 parameters: [ToolParameter("actions", .array, "The actions, in order.", minimum: 1, maximum: Double(batchLimit), items: batchItemSchema)],
-                returns: "`completed` and `total` counts and `results`: one compact entry per action that ran (tool, ok, method, verified, target or error).",
+                returns: "`completed` and `total` counts and `results`: one compact entry per action that ran (tool, ok, method, verified, target or error); `requires_observation` when paused at an unconfirmed click.",
                 failures: ["`invalid_arguments`: an action is malformed; nothing ran. The message names the action.",
                            "Any other error: the batch stopped at that action. `completed` says how many ran before it; fix that action and send the rest.",
                            mayHaveRun],

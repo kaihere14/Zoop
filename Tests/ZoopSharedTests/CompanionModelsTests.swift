@@ -64,6 +64,23 @@ private func sample(phase: TaskPhase = .pending, progress: Int = 0) -> Companion
     let data = try JSONEncoder().encode(snapshot)
     var restored = try JSONDecoder().decode(CompanionSnapshot.self, from: data)
     restored.prepareForRestore()
-    #expect(restored.tasks.map(\.phase) == [.paused, .paused, .pending, .complete])
+    #expect(restored.tasks.map(\.phase) == [.failed, .failed, .pending, .complete])
     #expect(restored.tasks[0].progress == 44)
+}
+
+@Test func snapshotsWithoutLivePlanFieldsStillDecode() throws {
+    let task = sample()
+    var value = try #require(JSONValue.parse(String(decoding: JSONEncoder().encode(task), as: UTF8.self)).objectValue)
+    for key in ["executablePlan", "statusNote", "resultSummary", "reportMarkdown"] { value.removeValue(forKey: key) }
+    let decoded = try JSONDecoder().decode(CompanionTask.self, from: Data(JSONValue.object(value).jsonText.utf8))
+    #expect(decoded.id == task.id)
+    #expect(decoded.executablePlan == nil && decoded.resultSummary == nil)
+}
+
+@Test func realExecutionProgressCannotMarkCompletionWithoutTheOutcome() {
+    var task = sample(phase: .running)
+    task.updateExecution(note: "Checking", percent: 100)
+    #expect(task.progress == 99 && task.phase == .running)
+    task.finishExecution(success: false, summary: "Blocked")
+    #expect(task.phase == .failed && task.progress == 99)
 }

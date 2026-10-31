@@ -157,3 +157,17 @@ final class EventLog: @unchecked Sendable {
         #expect(rendered[1].text.contains("Older screenshot removed"))
     }
 }
+
+struct ToolOutputTrimmingTests {
+    @Test func olderLongToolResultsKeepOnlyAPreview() {
+        let long = String(repeating: "a", count: 5_000)
+        let history: [ModelMessage] = [.user("task")] + (0..<6).map { .toolResult(id: "t\($0)", long) } + [.toolResult(id: "short", "ok")]
+        let rendered = AgentSession.render(history, keepingImages: 1, keepingToolResults: 4)
+        #expect(rendered[1].text.count < 600 && rendered[1].text.contains("trimmed"))
+        #expect(rendered[2].text.contains("trimmed"))
+        #expect(rendered[3].text.contains("trimmed"))
+        #expect(rendered[4].text == long && rendered[6].text == long)
+        #expect(rendered[1].toolCallID == "t0")
+        #expect(rendered.last?.text == "ok")
+    }
+}

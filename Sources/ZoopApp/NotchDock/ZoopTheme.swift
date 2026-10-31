@@ -6,8 +6,11 @@ enum ZoopTheme {
     static let secondary = Color(red: 0.61, green: 0.66, blue: 0.55)
     static let spring = Animation.interpolatingSpring(mass: 0.8, stiffness: 300, damping: 28, initialVelocity: 0)
     static let quiet = Animation.easeOut(duration: 0.18)
-    /// Island morph: damping 0.78 overshoots by about 2% before settling, like the Dynamic Island.
-    static let island = Animation.spring(response: 0.46, dampingFraction: 0.78)
+    /// Island opening: damping 0.8 overshoots by about 1% before settling, like the Dynamic Island.
+    static let island = Animation.spring(response: 0.34, dampingFraction: 0.8)
+    /// Island closing is critically damped (no overshoot). A bouncy close shrinks past the collapsed
+    /// size and springs back, which makes the island jump above the hardware notch.
+    static let islandClose = Animation.spring(response: 0.3, dampingFraction: 1)
 }
 
 struct GlassButtonStyle: ButtonStyle {
@@ -37,7 +40,7 @@ extension AnyTransition {
     static func notchContent(delay: Double) -> AnyTransition {
         .asymmetric(
             insertion: .modifier(active: BlurSlide(opacity: 0, blur: 8, y: -18), identity: BlurSlide(opacity: 1, blur: 0, y: 0))
-                .animation(.spring(response: 0.42, dampingFraction: 0.86).delay(delay)),
+                .animation(.spring(response: 0.32, dampingFraction: 0.88).delay(delay)),
             removal: .opacity.animation(.easeIn(duration: 0.1)))
     }
 

@@ -15,6 +15,7 @@ struct FakeBackend: HelperBackend {
     var captureFailure: HelperFailure?
     var actionDelay: Duration = .zero
     var actionRecorder: ActionRecorder?
+    var prompts: [PermissionPrompt] = []
     var png = Data((0..<3_000_000).map { UInt8($0 % 251) })   // ~3 MB, spans many socket reads
 
     static let session = SessionInfo(uid: Int(getuid()), user: "fake-agent", pid: 1234, onConsole: false,
@@ -35,10 +36,22 @@ struct FakeBackend: HelperBackend {
     func openApp(_ bundleID: String) async throws -> AppInfo {
         AppInfo(bundleID: bundleID, name: "Test", pid: 1234, isActive: false)
     }
+    func permissionPrompts() async throws -> [PermissionPrompt] { prompts }
+    func appDialogs(bundleID: String) async throws -> [PermissionPrompt] { prompts.filter { $0.ownerApp == bundleID && $0.kind == .appDialog } }
+    func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
+        guard prompts.contains(where: { $0.id == promptID && $0.choices.contains(where: { $0.id == choiceID }) }) else {
+            throw HelperFailure(.notFound, "no permission dialog")
+        }
+        await actionRecorder?.recordPermission()
+        try await Task.sleep(for: actionDelay)
+        return ActionReport(action: "permissionChoice", method: .axPress, landed: true, detail: "Dialog closed")
+    }
     func perform(_ action: InputAction) async throws -> ActionReport {
         await actionRecorder?.record(action)
         try await Task.sleep(for: actionDelay)
-        return ActionReport(action: action.name, method: .axPress, target: Self.element, pid: 1234,
+        let method: ActionMethod
+        if case .click(let click) = action, click.strategy == .mouse { method = .pidMouse } else { method = .axPress }
+        return ActionReport(action: action.name, method: method, target: Self.element, pid: 1234,
                             app: "test.app", axError: 0, landed: nil, detail: "fake action")
     }
 
@@ -47,6 +60,13 @@ struct FakeBackend: HelperBackend {
 actor ActionRecorder {
     private(set) var actions: [InputAction] = []
     func record(_ action: InputAction) { actions.append(action) }
+    private(set) var permissionSelections = 0
+    func recordPermission() { permissionSelections += 1 }
+    func waitForPermission() async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while permissionSelections == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        guard permissionSelections > 0 else { throw HelperFailure(.internalError, "permission choice never reached backend") }
+    }
     func waitForFirst() async throws {
         let deadline = ContinuousClock.now + .seconds(2)
         while actions.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
@@ -156,6 +176,7 @@ func isFailed(_ state: HelperConnection.State) -> Bool { if case .failed = state
     }
 
     @Test(arguments: [InputAction.click(ClickAction(point: Point(x: 10, y: 20))),
+                      .click(ClickAction(point: Point(x: 10, y: 20), strategy: .mouse, bundleID: "test.app")),
                       .scrollTo(ScrollToAction(point: Point(x: 439, y: 359), fraction: 0.5))])
     func neverReplaysInputAfterHelperRestart(_ action: InputAction) async throws {
         let path = temporarySocketPath()
@@ -445,6 +466,7 @@ final class SilentHelper: @unchecked Sendable {
         #expect(!click.isError)
         #expect(click.content["method"] == "axPress")
         #expect(click.content["verified"] == .null)
+        #expect(click.requiresObservation)
         #expect(click.content["next"] == "Take a screenshot to confirm the effect.")
 
         _ = await toolbox.call("type_text", arguments: ["text": "hi\n"])
@@ -525,13 +547,29 @@ final class SilentHelper: @unchecked Sendable {
                      {"tool": "type_text", "text": "hi"}]}
         """#)
         #expect(!batch.isError)
-        #expect(batch.content["completed"] == 3)
+        #expect(batch.content["completed"] == 1)
+        #expect(batch.requiresObservation)
         #expect(await recorder.actions == [
-            .click(ClickAction(point: Point(x: 25, y: 40))),
-            .click(ClickAction(point: Point(x: 25, y: 40))),
-            .key(KeyCombo(key: "return")),
-            .type(text: "hi"),
+            .click(ClickAction(point: Point(x: 25, y: 40), bundleID: "test.app")),
+            .click(ClickAction(point: Point(x: 25, y: 40), bundleID: "test.app")),
         ])
+        let remaining = await toolbox.call("batch", argumentsJSON: #"{"actions":[{"tool":"press_key","keys":"return"},{"tool":"type_text","text":"hi"}]}"#)
+        #expect(!remaining.isError && remaining.content["completed"] == 2)
+        #expect(await recorder.actions.suffix(2) == [.key(KeyCombo(key: "return")), .type(text: "hi")])
+        await connection.disconnect()
+    }
+
+    @Test func explicitMouseStrategyReachesHelperOnceAndRemainsUnconfirmed() async throws {
+        let path = temporarySocketPath()
+        let recorder = ActionRecorder()
+        let server = try startServer(at: path, backend: FakeBackend(actionRecorder: recorder))
+        defer { server.stop() }
+        let connection = HelperConnection(configuration: testConfiguration(path))
+        let result = await SessionToolbox(connection: connection).call("click", argumentsJSON:
+            #"{"x":25,"y":40,"bundle_id":"test.app","strategy":"mouse"}"#)
+        #expect(!result.isError && result.requiresObservation)
+        #expect(result.content["method"] == "pidMouse" && result.content["verified"] == .null)
+        #expect(await recorder.actions == [.click(ClickAction(point: Point(x: 25, y: 40), strategy: .mouse, bundleID: "test.app"))])
         await connection.disconnect()
     }
 

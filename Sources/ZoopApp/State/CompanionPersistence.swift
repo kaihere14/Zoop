@@ -22,6 +22,11 @@ struct CompanionPersistence {
     func save(_ snapshot: CompanionSnapshot) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(snapshot)
-        try data.write(to: directory.appendingPathComponent("companion-state.json"), options: .atomic)
+        let file = directory.appendingPathComponent("companion-state.json")
+        let backup = directory.appendingPathComponent("companion-state.pre-live.json")
+        if FileManager.default.fileExists(atPath: file.path), !FileManager.default.fileExists(atPath: backup.path) {
+            try FileManager.default.copyItem(at: file, to: backup)
+        }
+        try data.write(to: file, options: .atomic)
     }
 }

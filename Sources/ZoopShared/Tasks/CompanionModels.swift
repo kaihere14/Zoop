@@ -5,10 +5,10 @@ public enum CompanionMood: String, Sendable {
 }
 
 public enum TaskPhase: String, Codable, CaseIterable, Sendable {
-    case pending, dispatching, running, paused, complete, cancelled
+    case pending, dispatching, running, paused, complete, cancelled, failed
 
     public var isLive: Bool { self == .running || self == .paused }
-    public var isTerminal: Bool { self == .complete || self == .cancelled }
+    public var isTerminal: Bool { self == .complete || self == .cancelled || self == .failed }
 }
 
 public enum ResearchKind: String, Codable, Sendable {
@@ -29,10 +29,15 @@ public struct CompanionTask: Identifiable, Codable, Equatable, Sendable {
     public let kind: ResearchKind
     public private(set) var phase: TaskPhase
     public private(set) var progress: Int
+    /// Optional fields preserve decoding of snapshots from the original UI preview.
+    public let executablePlan: TaskPlan?
+    public private(set) var statusNote: String?
+    public private(set) var resultSummary: String?
+    public private(set) var reportMarkdown: String?
 
     public init(id: UUID = UUID(), request: String, title: String, domain: String,
                 fileName: String, steps: [String], kind: ResearchKind,
-                phase: TaskPhase = .pending, progress: Int = 0) {
+                phase: TaskPhase = .pending, progress: Int = 0, executablePlan: TaskPlan? = nil) {
         self.id = id
         self.request = request
         self.title = title
@@ -40,6 +45,7 @@ public struct CompanionTask: Identifiable, Codable, Equatable, Sendable {
         self.fileName = fileName
         self.steps = steps
         self.kind = kind
+        self.executablePlan = executablePlan
         self.phase = phase
         self.progress = min(100, max(0, progress))
     }
@@ -64,8 +70,25 @@ public struct CompanionTask: Identifiable, Codable, Equatable, Sendable {
         if progress == 100 { phase = .complete }
     }
 
+    public mutating func updateExecution(note: String? = nil, percent: Int? = nil) {
+        guard phase == .running else { return }
+        if let note { statusNote = note }
+        if let percent { progress = min(99, max(progress, percent)) }
+    }
+
+    public mutating func finishExecution(success: Bool, summary: String, report: String? = nil) {
+        guard phase == .running else { return }
+        phase = success ? .complete : .failed
+        if success { progress = 100 }
+        statusNote = summary; resultSummary = summary; reportMarkdown = report
+    }
+
     public mutating func prepareForRestore() {
-        if phase == .running || phase == .dispatching { phase = .paused }
+        if phase == .running || phase == .dispatching || phase == .paused {
+            phase = .failed
+            statusNote = "Interrupted when Zoop closed. Send a new request to plan again; previous actions will not be replayed."
+            return
+        }
     }
 }
 
@@ -98,6 +121,7 @@ public struct CompanionSnapshot: Codable, Sendable {
     public mutating func prepareForRestore() {
         for index in tasks.indices { tasks[index].prepareForRestore() }
     }
+
 }
 
 public struct ComparisonRow: Identifiable, Equatable, Sendable {

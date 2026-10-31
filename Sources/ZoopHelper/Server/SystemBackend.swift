@@ -10,6 +10,11 @@ struct SystemBackend: HelperBackend {
     func elements(_ query: ElementQuery) async throws -> [ElementInfo] { try await actions.elements(query) }
     func openApp(_ bundleID: String) async throws -> AppInfo { try await actions.openApp(bundleID) }
     func perform(_ action: InputAction) async throws -> ActionReport { try await actions.perform(action) }
+    func permissionPrompts() async throws -> [PermissionPrompt] { try await actions.permissionPrompts() }
+    func appDialogs(bundleID: String) async throws -> [PermissionPrompt] { try await actions.appDialogs(bundleID: bundleID) }
+    func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
+        try await actions.respondToPermission(promptID: promptID, choiceID: choiceID)
+    }
 
     func sessionInfo() async -> SessionInfo {
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]

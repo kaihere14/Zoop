@@ -32,6 +32,9 @@ public struct ToolResult: Sendable, Equatable {
 
     /// `content` as compact JSON, the text to send back to the model.
     public var text: String { content.jsonText }
+
+    /// The model must inspect a fresh screenshot before continuing this action sequence.
+    public var requiresObservation: Bool { content["requires_observation"] == true }
 }
 
 /// Executes agent tool calls against the agent session through the session bridge.
@@ -68,7 +71,14 @@ public struct SessionToolbox: Sendable {
             let args = try definition.validate(arguments)
             return try await run(tool, args)
         } catch {
-            return Self.failure(name, error, readOnly: definition.isReadOnly)
+            var result = Self.failure(name, error, readOnly: definition.isReadOnly)
+            if tool == .click, result.content["retry"] == "after_check" || result.content["error"] == "unsupported" {
+                var fields = result.content.objectValue ?? [:]
+                fields["requires_observation"] = true
+                fields["next"] = "Take a screenshot and check whether the click already happened. If it did not, call open_app for the target app, take another screenshot, locate the target visually, then click with strategy mouse, x, y and bundle_id. Never retry blindly."
+                result.content = .object(fields)
+            }
+            return result
         }
     }
 
@@ -134,9 +144,13 @@ public struct SessionToolbox: Sendable {
             let double = args.bool("double", default: false)
             if right && double { throw ToolCallError.invalidArguments("double click is only available with the left button") }
             let byPoint = try Self.checkClickTarget(args)
+            if !byPoint { _ = try await connection.openApp(bundleID: args.string("bundle_id")!) }
             let point = byPoint ? Point(x: args.number("x")!, y: args.number("y")!)
                                 : try await resolve(args.string("element")!, in: args.string("bundle_id")!)
-            return try await act(tool, .click(ClickAction(point: point, button: right ? .right : .left, count: double ? 2 : 1)))
+            let strategy = ClickStrategy(rawValue: args.string("strategy") ?? "accessibility")!
+            return try await act(tool, .click(ClickAction(point: point, button: right ? .right : .left,
+                                                         count: double ? 2 : 1, strategy: strategy,
+                                                         bundleID: args.string("bundle_id"))))
 
         case .typeText:
             return try await act(tool, .type(text: args.string("text")!))
@@ -165,6 +179,12 @@ public struct SessionToolbox: Sendable {
 
     /// A click needs exactly one target form. Returns true for a point, false for a name.
     static func checkClickTarget(_ args: ToolArguments) throws(ToolCallError) -> Bool {
+        if args.string("strategy") == "mouse" {
+            guard args.has("x"), args.has("y"), args.string("bundle_id")?.isEmpty == false, !args.has("element") else {
+                throw .invalidArguments("strategy mouse requires x, y and bundle_id from a fresh screenshot, with no element name")
+            }
+            return true
+        }
         let byPoint = args.has("x") && args.has("y")
         let byName = args.has("bundle_id") && args.has("element")
         guard byPoint != byName, args.has("x") == args.has("y"), args.has("bundle_id") == args.has("element") else {
@@ -175,27 +195,10 @@ public struct SessionToolbox: Sendable {
 
     // MARK: - Batch
 
-    /// Checks every action first, so a malformed one stops the batch before anything runs,
-    /// then runs them in order and stops at the first failure or `verified: false`.
+    /// Checks every action first, then stops at a failure or an unconfirmed click so the
+    /// model can inspect the effect before continuing the remaining actions.
     private func runBatch(_ value: JSONValue) async throws -> ToolResult {
-        guard case .array(let items) = value else { throw ToolCallError.invalidArguments("actions must be an array") }
-        var planned: [(SessionToolName, JSONValue)] = []
-        for (index, item) in items.enumerated() {
-            guard var fields = item.objectValue else { throw ToolCallError.invalidArguments("action \(index + 1) must be an object") }
-            let name = fields.removeValue(forKey: "tool")?.stringValue ?? ""
-            guard let tool = SessionToolName(rawValue: name), SessionTools.batchable.contains(tool) else {
-                throw ToolCallError.invalidArguments("action \(index + 1): tool must be one of \(SessionTools.batchable.map(\.rawValue).joined(separator: ", "))")
-            }
-            let arguments = JSONValue.object(fields.filter { $0.value != .null })
-            do {
-                let checked = try SessionTools.definition(for: tool).validate(arguments)
-                if tool == .click { _ = try Self.checkClickTarget(checked) }
-            } catch let error as ToolCallError {
-                guard case .invalidArguments(let message) = error else { throw error }
-                throw ToolCallError.invalidArguments("action \(index + 1) (\(name)): \(message)")
-            }
-            planned.append((tool, arguments))
-        }
+        let planned = try Self.batchPlan(value)
         var results: [JSONValue] = []
         for (index, (tool, arguments)) in planned.enumerated() {
             let result = await call(tool.rawValue, arguments: arguments)
@@ -210,12 +213,51 @@ public struct SessionToolbox: Sendable {
                     "completed": .number(Double(index)), "total": .number(Double(planned.count)), "results": .array(results),
                     "next": .string("Actions before it ran. Take a screenshot, fix action \(index + 1), then send it and the remaining actions."),
                 ]
+                if result.requiresObservation { content["requires_observation"] = true }
                 content["ok"] = false
                 return ToolResult(tool: SessionToolName.batch.rawValue, isError: true, content: .object(content))
+            }
+            if result.requiresObservation {
+                return Self.success(.batch, ["completed": .number(Double(index + 1)), "total": .number(Double(planned.count)),
+                    "results": .array(results), "requires_observation": true,
+                    "next": "The last click was sent but its effect is unconfirmed. Take a screenshot before continuing. Do not replay completed actions; if the click did not work, focus the app with open_app, screenshot again, and try strategy mouse at its current position."])
             }
         }
         return Self.success(.batch, ["completed": .number(Double(planned.count)), "total": .number(Double(planned.count)),
                                      "results": .array(results), "next": "Take a screenshot to confirm the final state."])
+    }
+
+    /// Validate a complete call without executing it. The planner and plan runner use this
+    /// same boundary as live calls, including click target and nested batch validation.
+    public static func validateCall(_ tool: SessionToolName, arguments: JSONValue) throws {
+        let args = try SessionTools.definition(for: tool).validate(arguments)
+        if tool == .click { _ = try checkClickTarget(args) }
+        if tool == .batch { _ = try batchPlan(args.values["actions"]!) }
+    }
+
+    private static func batchPlan(_ value: JSONValue) throws -> [(SessionToolName, JSONValue)] {
+        guard case .array(let items) = value else { throw ToolCallError.invalidArguments("actions must be an array") }
+        var planned: [(SessionToolName, JSONValue)] = []
+        for (index, item) in items.enumerated() {
+            guard var fields = item.objectValue else { throw ToolCallError.invalidArguments("action \(index + 1) must be an object") }
+            let name = fields.removeValue(forKey: "tool")?.stringValue ?? ""
+            guard let tool = SessionToolName(rawValue: name), SessionTools.batchable.contains(tool) else {
+                throw ToolCallError.invalidArguments("action \(index + 1): tool must be one of \(SessionTools.batchable.map(\.rawValue).joined(separator: ", "))")
+            }
+            let arguments = JSONValue.object(fields.filter { $0.value != .null })
+            do {
+                let checked = try SessionTools.definition(for: tool).validate(arguments)
+                if tool == .click { _ = try Self.checkClickTarget(checked) }
+                if tool == .click, checked.string("strategy") == "mouse" {
+                    throw ToolCallError.invalidArguments("mouse recovery must be a separate click after open_app and a fresh screenshot, not inside a batch")
+                }
+            } catch {
+                guard case ToolCallError.invalidArguments(let message) = error else { throw error }
+                throw ToolCallError.invalidArguments("action \(index + 1) (\(name)): \(message)")
+            }
+            planned.append((tool, arguments))
+        }
+        return planned
     }
 
     // MARK: - Targets by name
@@ -255,6 +297,7 @@ public struct SessionToolbox: Sendable {
         if let target = report.target { content["target"] = .string(Self.line(target)) }
         if let app = report.app { content["app"] = .string(app) }
         if let error = report.axError, error != 0 { content["ax_error"] = .number(Double(error)) }
+        if tool == .click, report.landed != true { content["requires_observation"] = true }
         switch report.landed {
         case true?: break
         case false?:

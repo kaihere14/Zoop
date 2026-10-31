@@ -11,6 +11,9 @@ protocol HelperBackend: Sendable {
     func elements(_ query: ElementQuery) async throws -> [ElementInfo]
     func openApp(_ bundleID: String) async throws -> AppInfo
     func perform(_ action: InputAction) async throws -> ActionReport
+    func permissionPrompts() async throws -> [PermissionPrompt]
+    func appDialogs(bundleID: String) async throws -> [PermissionPrompt]
+    func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport
 }
 
 func helperLog(_ message: String) {
@@ -228,6 +231,10 @@ final class ClientSession: @unchecked Sendable {
             case .elements(let query): return (.success(.elements(list: try await backend.elements(query))), Data())
             case .openApp(let bundleID): return (.success(.app(info: try await backend.openApp(bundleID))), Data())
             case .input(let action): return (.success(.action(report: try await backend.perform(action))), Data())
+            case .permissionPrompts: return (.success(.permissionPrompts(list: try await backend.permissionPrompts())), Data())
+            case .appDialogs(let bundleID): return (.success(.permissionPrompts(list: try await backend.appDialogs(bundleID: bundleID))), Data())
+            case .respondToPermission(let promptID, let choiceID):
+                return (.success(.action(report: try await backend.respondToPermission(promptID: promptID, choiceID: choiceID))), Data())
             }
         } catch let failure as HelperFailure {
             return (.failure(failure), Data())

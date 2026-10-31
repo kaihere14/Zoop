@@ -84,9 +84,9 @@ public actor HelperConnection {
             case .hello, .ping: ping
             case .info: info
             case .capture: capture
-            case .inspect, .elements: query
+            case .inspect, .elements, .permissionPrompts, .appDialogs: query
             case .openApp: openApp
-            case .input: input
+            case .input, .respondToPermission: input
             }
         }
     }
@@ -247,6 +247,25 @@ public actor HelperConnection {
     public func perform(_ action: InputAction) async throws -> ActionReport {
         let response = try await request(.input(action: action))
         guard case .action(let report) = response.result else { throw Self.unexpectedReply(to: action.name) }
+        return report
+    }
+
+    public func permissionPrompts() async throws -> [PermissionPrompt] {
+        let response = try await request(.permissionPrompts)
+        guard case .permissionPrompts(let list) = response.result else { throw Self.unexpectedReply(to: "permissionPrompts") }
+        return list
+    }
+
+    public func appDialogs(bundleID: String) async throws -> [PermissionPrompt] {
+        let response = try await request(.appDialogs(bundleID: bundleID))
+        guard case .permissionPrompts(let list) = response.result else { throw Self.unexpectedReply(to: "appDialogs") }
+        return list
+    }
+
+    /// A user's exact choice, sent once. Neither this nor its opaque token is a model tool.
+    public func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
+        let response = try await request(.respondToPermission(promptID: promptID, choiceID: choiceID))
+        guard case .action(let report) = response.result else { throw Self.unexpectedReply(to: "respondToPermission") }
         return report
     }
 

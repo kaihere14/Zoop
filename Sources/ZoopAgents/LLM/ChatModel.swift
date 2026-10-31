@@ -97,12 +97,19 @@ public struct ModelRequest: Sendable {
 }
 
 public struct ModelUsage: Sendable, Equatable {
+    /// All input tokens of the request, including those read from or written to a prompt cache.
     public var inputTokens: Int
     public var outputTokens: Int
+    /// Part of `inputTokens` served from the provider's prompt cache (billed at a discount).
+    public var cacheReadTokens: Int
+    /// Part of `inputTokens` written to the prompt cache (billed at a small premium).
+    public var cacheWriteTokens: Int
 
-    public init(inputTokens: Int, outputTokens: Int) {
+    public init(inputTokens: Int, outputTokens: Int, cacheReadTokens: Int = 0, cacheWriteTokens: Int = 0) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
     }
 }
 

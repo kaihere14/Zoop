@@ -5,14 +5,17 @@ import ZoopShared
 
 @MainActor
 final class ExportCoordinator {
-    let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Zoop/exports", isDirectory: true)
+    let directory: URL
+    init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Zoop/exports", isDirectory: true)) {
+        self.directory = directory
+    }
 
     func write(_ task: CompanionTask) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Only a generated basename is used; a request can never supply a filesystem path.
         let basename = URL(fileURLWithPath: task.fileName).lastPathComponent
         let destination = directory.appendingPathComponent(basename)
-        try DemoResearch.report(for: task).write(to: destination, atomically: true, encoding: .utf8)
+        try Self.report(for: task).write(to: destination, atomically: true, encoding: .utf8)
         return destination
     }
 
@@ -27,11 +30,17 @@ final class ExportCoordinator {
             MainActor.assumeIsolated {
                 guard response == .OK, let url = panel.url else { return }
                 do {
-                    try DemoResearch.report(for: task).write(to: url, atomically: true, encoding: .utf8)
+                    try Self.report(for: task).write(to: url, atomically: true, encoding: .utf8)
                     completion(nil)
                 } catch { completion(error) }
             }
         }
+    }
+
+    static func report(for task: CompanionTask) -> String {
+        if let report = task.reportMarkdown { return report }
+        if let summary = task.resultSummary { return "# \(task.title)\n\n\(summary)\n" }
+        return "# \(task.title)\n\nNo completed result is available.\n"
     }
 
     func revealExports() throws {

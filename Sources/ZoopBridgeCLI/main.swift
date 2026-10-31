@@ -15,6 +15,8 @@ commands:
       --out DIR         folder for the PNG (default: frames)
       --max-width PX    downscale to at most PX pixels wide
   inspect X Y         element at a point and its ancestors
+  permissions         list pending system permission dialogs and their exact choices (read-only)
+  dialogs BUNDLE_ID   list an app's sheets/dialogs and their exact choices (read-only)
   elements BUNDLE_ID [--all] [--limit N]
   open BUNDLE_ID      launch or bring forward an app in the agent session
   click X Y [--right] [--double]
@@ -196,9 +198,9 @@ case "tools":
 case "call":
     guard (1...2).contains(options.positional.count) else { fail("call needs TOOL and optional JSON arguments", code: 64) }
     action = nil
-case "open", "elements": requireArguments(1); action = nil
+case "open", "elements", "dialogs": requireArguments(1); action = nil
 case "inspect": _ = pointArguments(); action = nil
-case "status", "ping", "info", "capture", "watch": requireArguments(0); action = nil
+case "status", "ping", "info", "capture", "watch", "permissions": requireArguments(0); action = nil
 default: fail("unknown command '\(options.command)'", code: 64)
 }
 
@@ -217,6 +219,8 @@ do {
         try printJSON(await connection.perform(action))
     } else {
         switch options.command {
+        case "permissions": try printJSON(await connection.permissionPrompts())
+        case "dialogs": try printJSON(await connection.appDialogs(bundleID: options.positional[0]))
         case "status": printPermissions(try await connection.connect().session)
         case "ping":
             for index in 1...options.count {

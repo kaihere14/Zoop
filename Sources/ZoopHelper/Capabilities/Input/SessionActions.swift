@@ -8,6 +8,8 @@ import ZoopShared
 actor SessionActions {
     private var busy = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var permissionDialogs: [PermissionDialogs.Observed] = []
+    private var appDialogCache: [PermissionDialogs.Observed] = []
 
     private func acquire() async {
         if !busy { busy = true; return }
@@ -31,12 +33,65 @@ actor SessionActions {
         return try AXElement.elements(query)
     }
 
+    func permissionPrompts() throws -> [PermissionPrompt] {
+        try AXElement.requirePermission()
+        permissionDialogs = PermissionDialogs.scan(previous: permissionDialogs)
+        return permissionDialogs.map(\.prompt)
+    }
+
+    func appDialogs(bundleID: String) throws -> [PermissionPrompt] {
+        try AXElement.requirePermission()
+        appDialogCache = PermissionDialogs.scan(previous: appDialogCache, bundleID: bundleID)
+        return appDialogCache.map(\.prompt)
+    }
+
+    func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
+        await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        if let cached = appDialogCache.first(where: { $0.prompt.id == promptID }) {
+            _ = try appDialogs(bundleID: cached.prompt.ownerApp)
+        } else { _ = try permissionPrompts() }
+        let (dialog, index) = try PermissionDialogs.selection(promptID: promptID, choiceID: choiceID, in: permissionDialogs + appDialogCache)
+        // Consume before performing: even an AX error can mean the press happened.
+        permissionDialogs.removeAll { $0.prompt.id == promptID }
+        appDialogCache.removeAll { $0.prompt.id == promptID }
+        let target = dialog.buttons[index].info
+        if dialog.prompt.kind == .appDialog {
+            // Focus the existing dialog, never reopen the app (which may dismiss a sheet).
+            bringForward(dialog.buttons[index])
+            _ = dialog.window.perform(kAXRaiseAction)
+        }
+        let error = dialog.buttons[index].perform(kAXPressAction)
+        var dismissed = false
+        for _ in 0..<5 {
+            try await Task.sleep(for: .milliseconds(100))
+            if PermissionDialogs.isPresent(dialog) == false { dismissed = true; break }
+            if NSRunningApplication(processIdentifier: dialog.window.pid)?.isTerminated != false { dismissed = true; break }
+        }
+        return ActionReport(action: "permissionChoice", method: .axPress, target: target, pid: target.pid,
+            app: target.app, axError: Int(error.rawValue), landed: dismissed ? true : nil,
+            detail: dismissed ? "Selected \(dialog.labels[index]); the dialog closed. \(dialog.prompt.kind == .appDialog ? "Verify the app's result separately; this is not proof that a file was saved." : "This does not independently verify the permission grant.")"
+                              : "Selected \(dialog.labels[index]), but the dialog is still present. macOS may require direct interaction in the agent session. No automatic retry was sent.")
+    }
+
     func perform(_ action: InputAction) async throws -> ActionReport {
         await acquire()
         defer { release() }
         try Task.checkCancellation()
+        if !(try permissionPrompts()).isEmpty {
+            throw HelperFailure(.unsupported, "A system permission dialog is waiting for the person's choice in Zoop. Do not click it or send keys automatically.")
+        }
         switch action {
-        case .click(let click): return try clickAt(click)
+        case .click(let click):
+            let result = try clickAt(click)
+            if result.landed == nil {
+                // Apps consume input asynchronously; especially AXShowMenu can appear
+                // about a second later. Hold the action gate while it settles before the
+                // runner captures its verification image.
+                try await Task.sleep(for: result.method == .axShowMenu ? .milliseconds(1000) : .milliseconds(200))
+            }
+            return result
         case .setText(let action): return try setText(action)
         case .type(let text): return try type(text)
         case .key(let combo): return try key(combo)
@@ -57,21 +112,31 @@ actor SessionActions {
                             axError: error.map { Int($0.rawValue) }, landed: landed, detail: detail)
     }
 
-    private func focus(_ element: AXElement) -> AXError {
+    private func bringForward(_ element: AXElement) {
         let app = AXElement(AXUIElementCreateApplication(element.pid))
         _ = app.set(kAXFrontmostAttribute, kCFBooleanTrue)
-        if let window = element.element(kAXWindowAttribute) { _ = window.set(kAXMainAttribute, kCFBooleanTrue) }
+        if let window = element.element(kAXWindowAttribute) {
+            _ = window.set(kAXMainAttribute, kCFBooleanTrue)
+            if window.actions.contains(kAXRaiseAction) { _ = window.perform(kAXRaiseAction) }
+        }
+    }
+
+    private func focus(_ element: AXElement) -> AXError {
+        bringForward(element)
         return element.set(kAXFocusedAttribute, kCFBooleanTrue)
     }
 
-    /// Accessibility-only. In a background session apps ignore PID-targeted mouse events
-    /// (tested in AppKit, WebKit and SwiftUI), so there is deliberately no event fallback:
-    /// an `unsupported` failure tells the agent to choose another approach.
+    /// Strategies are explicit: never send a second click just because AX returned an error.
     private func clickAt(_ click: ClickAction) throws -> ActionReport {
         guard (1...2).contains(click.count) else { throw HelperFailure(.badRequest, "click count must be 1 or 2") }
         guard click.point.x.isFinite, click.point.y.isFinite else { throw HelperFailure(.badRequest, "coordinates must be finite") }
         try AXElement.requirePermission()
+        if click.strategy == .mouse { return try mouseClick(click) }
         let hit = try AXElement.at(click.point)
+        if let bundleID = click.bundleID, hit.info.app != bundleID {
+            throw HelperFailure(.notFound, "the target point is not in \(bundleID). Call open_app, then take a new screenshot before locating it again.")
+        }
+        bringForward(hit)
         let (action, method): (String, ActionMethod) =
             click.button == .right ? (kAXShowMenuAction, .axShowMenu)
             : click.count == 2 ? ("AXOpen", .axOpen)
@@ -97,6 +162,34 @@ actor SessionActions {
         }
         let found = chain.map { "\($0.string(kAXRoleAttribute) ?? "AXUnknown")[\($0.actions.joined(separator: ","))]" }.joined(separator: " < ")
         throw HelperFailure(.unsupported, "nothing at \(click.point) or its ancestors supports \(action). Found: \(found)")
+    }
+
+    private func mouseClick(_ click: ClickAction) throws -> ActionReport {
+        try requirePostEvent()
+        guard let bundleID = click.bundleID, !bundleID.isEmpty else {
+            throw HelperFailure(.badRequest, "mouse clicks require the target app's bundleID")
+        }
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first,
+              !app.isTerminated else { throw HelperFailure(.notFound, "\(bundleID) is not running in the agent session") }
+        let pid = app.processIdentifier
+        guard AXElement.focusedApp()?.pid == pid else {
+            throw HelperFailure(.unsupported, "\(bundleID) is not the agent session's focused app. Call open_app, then screenshot and locate the target again before using strategy mouse.")
+        }
+        var process = proc_bsdinfo()
+        let bytes = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &process, bytes) == bytes,
+              process.pbi_uid == getuid() else {
+            throw HelperFailure(.unsupported, "mouse target must belong to the helper's user session")
+        }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let window = try MouseClickTarget(point: click.point, expectedPID: pid, windows: windows)
+        let target = (try? AXElement.at(click.point))?.info
+        let events = try window.events(for: click)
+        // No global event taps, pointer warps or HID injection.
+        for event in events { event.postToPid(pid); usleep(20_000) }
+        return ActionReport(action: InputAction.click(click).name, method: .pidMouse, target: target,
+                            pid: Int(pid), app: bundleID,
+                            detail: "Mouse down/up posted to pid \(pid), window \(window.windowNumber). Delivery is unconfirmed; inspect the next screenshot before any further action. Background apps may ignore these events.")
     }
 
     private func setText(_ action: SetTextAction) throws -> ActionReport {

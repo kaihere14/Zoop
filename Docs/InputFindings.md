@@ -18,7 +18,7 @@ Summary of the input spike run on 2026-10-31 in `sbagent`'s session while it was
 
 ## What does not work
 
-These were removed from the helper in protocol v5.
+These were removed from the helper in protocol v5. Protocol v6 reintroduces PID mouse clicks only as an explicit, focus-assisted visual recovery attempt; the earlier failures below still apply until the new path is tested.
 
 | Approach | Result |
 |---|---|
@@ -55,3 +55,15 @@ The helper posts events only to a target app's pid and has no HID-level injectio
 - `set_text` on web forms whose page script keeps its own state.
 - More than one display.
 - Long runs: many actions in a row, helper restarts in the middle of a task.
+
+## Visual click recovery (protocol v6; awaiting real-session validation)
+
+After an AX click fails or returns an unconfirmed result, the runner captures a fresh screenshot before continuing. If the screen already shows the intended result, it must not retry. Otherwise it brings the app forward with `open_app`, takes another screenshot, locates the control visually and calls:
+
+```json
+{"x": 439, "y": 359, "bundle_id": "com.apple.TextEdit", "strategy": "mouse"}
+```
+
+Use `build/zoop-bridge call click '…'` to try the same tool from a terminal. Mouse recovery is a separate call; it is rejected inside batches. Batches pause on unconfirmed AX clicks and include that sent action in `completed`, so repair must check it before resuming the remaining actions. The executor blocks further calls from the same response until it has received the verification screenshot, and blocks mouse coordinates chosen before it has seen a screenshot after `open_app`.
+
+The helper requires the target app to be focused in the agent session and the visible normal window under the point to belong to it. It posts only to that PID, never a global or HID tap, and reports `method: pidMouse`, `verified: null`. This does not establish that background mouse events now work. Test the failing control in the real agent session and compare before/after screenshots; if it is still ignored, use keyboard navigation rather than repeating the click.

@@ -124,7 +124,7 @@ final class NotchPanelController: NSObject, NSWindowDelegate {
         } else if hoverArmed, hoverTask == nil {
             // A short dwell avoids opening when the pointer only passes by on its way to the menu bar.
             hoverTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(250))
+                try? await Task.sleep(for: .milliseconds(120))
                 guard let self, !Task.isCancelled else { return }
                 self.hoverTask = nil
                 if !self.store.isExpanded, self.interactiveRect.contains(NSEvent.mouseLocation) { self.store.isExpanded = true }

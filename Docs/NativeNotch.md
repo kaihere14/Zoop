@@ -1,85 +1,88 @@
-# Native notch companion
+# Native notch: base version
 
-The approved web interaction is implemented natively in `Sources/ZoopApp`. The application uses Swift 6, SwiftUI, and a borderless AppKit `NSPanel`. It has no web view, Electron runtime, or third-party Swift dependencies.
+The native app now connects the notch to chat, planning and the session helper. It runs one task at a time:
 
-## Run on a Mac
+1. Chat normally with the chat model. Normal replies do not touch the helper.
+2. When the chat model calls plan_task, the planner observes the agent session read-only and proposes an executable plan.
+3. Review the readable steps. Expand **Plan details** to inspect the tool calls.
+4. Click **Execute the plan**. Until that click, no task actions run.
+5. The Swift runner executes known calls directly. The executor model handles decision points, repairs and final verification.
+6. Live Activities shows real progress notes and the latest observed screenshot. The actual summary/report returns to chat and is saved under `~/Zoop/exports/`.
 
-Requirements: the repository’s macOS 27+ / Xcode 27 toolchain (Swift 6.4; the package manifest requires Swift tools 6.2 or newer). Run these commands from the repository root:
+New requests are disabled while a task is dispatching or executing. There is no task queue or pause/resume/stop interface in this base version. Missing model/session setup produces an error instead of simulated work. Desktop observations occur at agent checkpoints; this is not a continuous video stream.
 
-```sh
-swift build
-swift test
-swift run Zoop
+## Configure and run
+
+Use the repository's macOS 27+/Xcode 27 toolchain. The app reads `~/.zoop/config.json` (or `ZOOP_CONFIG`). Finder-launched apps do not inherit settings exported in a separate terminal, so use the config file for the built app:
+
+```json
+{
+  "agents": {
+    "chat": {"provider": "gemini", "model": "<chat model with tool calling>"},
+    "planner": {"provider": "gemini", "model": "<stronger model with tools and image input>"},
+    "executor": {"provider": "gemini", "model": "<execution model with tools and image input>"}
+  },
+  "providers": {
+    "gemini": {"apiKey": "<your key>"}
+  }
+}
 ```
 
-Zoop starts collapsed at the top center of the built-in notched display. If no notched display is attached, it uses the main display and draws a camera-shaped center. Click the companion or the sparkle menu-bar icon to expand it. A right-click on the menu-bar icon opens app options.
-
-To produce a local application bundle:
+Use actual model identifiers your provider offers. Other supported providers and configuration precedence are documented in [AgentLayer.md](AgentLayer.md). Keep credentials outside the repository and protect the configuration file with `chmod 600 ~/.zoop/config.json`.
 
 ```sh
-./Scripts/bundle.sh
+build/zoop-bridge status   # helper must be reachable with its permissions granted
+swift run zoop-agent config
+swift test
+Scripts/bundle.sh          # builds and ad-hoc signs build/Zoop.app
 open build/Zoop.app
 ```
 
-The script makes a release build and applies an ad-hoc signature for local use. Distribution signing and notarization are separate work.
+The helper retains its separate certificate-signed bundle and LaunchAgent installation described in [SessionBridge.md](SessionBridge.md). UI/agent changes do not require reinstalling the helper unless its protocol/capabilities also change.
 
-## Interactions
+## UI behavior
 
-- Idle states say **idling**. The pixel mascot has closed eyes, a gentle breathing animation, and a floating pixel Z. The busy orb is absent. While tasks execute, a small **N working** count beside the mascot includes running and dispatching work, excluding paused tasks.
-- A task that finishes while Zoop is collapsed, or after 15 seconds without interaction, pops a small task-specific card from beneath the mascot. The supplied ElevenLabs voice plays once while the mascot bounces with happy eyes and sparkles. The card stays for seven seconds; clicking it opens that task’s report. Multiple completions queue without overlapping audio. Opening Zoop, reset, and shutdown clear pending alerts. Muting preserves the visual alert, and restored completed history never triggers a fresh voice or notification. Background alerts do not activate the app or take keyboard focus.
-- While preparing or executing work, a single consistent searching globe appears beside changing status words. Word changes use a scoped blur, fade, and spring transition.
-- The glass surface changes dimensions independently of the conversation. Text is never scaled with the drawer.
-- Opening chat, including reopening an existing conversation, starts at the latest message. Scrolling upward lets you read history without streaming constantly pulling you downward.
-- Replies and plan steps stream progressively. **Start Process** appears only after the plan has finished streaming. Task state rejects execution until that explicit approval.
-- Approval dispatches a paper ticket from the actual button bounds to **Live Activities**, plays the synthesized 880–1320 Hz chime, and pulses the counter when the ticket arrives. Closing during flight does not lose an approved task.
-- Live Activities supports concurrent tasks, selection, pause, resume, and stop. Completed tabs show a checkmark briefly and animate away; historical completed tasks do not accumulate in the tab strip.
-- The ghost pointer is drawn within the simulated browser and never controls the Mac’s mouse.
-- Clicking outside or pressing Escape collapses Zoop. Unsent drafts and task progress remain in memory. **⌘ K** focuses chat while the panel has keyboard focus.
-- Chat, full response sources, tasks, and the sound preference are persisted. Executing tasks restore as **paused**, and resume only when requested.
-- Sample reports are saved to `~/Zoop/exports/` with unique filenames. **Save report** opens the standard save dialog. If automatic export fails, the report remains available for manual saving.
+The existing notch shape, mascot, expansion animation, plan streaming presentation, approval ticket animation, completion sound and result card remain. Chat smoothly follows new messages, streamed text and growing plan cards while at the bottom. Scrolling up manually pauses follow mode; returning to the bottom resumes it. Content growth and programmatic scroll animations do not turn follow mode off, and Reduce Motion disables the scroll animation. Clicking outside or pressing Escape collapses the notch while execution continues. Expand it to read progress or answer an executor question. Additional approvals or questions appear inside Live Activities and wait for your answer; declining does not imply approval.
 
-Reduced Motion disables mascot motion and orb animation, and simplifies word and tab transitions. The native controls have accessibility labels, and selectable chat text supports standard copy and paste.
+The base version uses actual outcomes to mark completion. Progress estimates are capped below 100 until a successful outcome arrives. Failed tasks display the failure and do not export a fabricated report. **Save result** saves the agent's Markdown report, or its actual summary when no report was requested.
 
-## Source map
+Chat, plans, task outcomes and sound preference are persisted. Old UI-preview snapshots remain readable. The first subsequent save preserves the previous state as `companion-state.pre-live.json` beside `companion-state.json` in Application Support/Zoop. Keep this backup if rolling back to the preview build. Tasks interrupted by quitting are marked failed after relaunch and require a new request; the app never restarts the original action sequence automatically. Screenshots and pending user answers are not persisted.
 
-| Folder | Responsibility |
-| --- | --- |
-| `Sources/ZoopApp/App` | Entry point, app lifecycle, menu-bar icon, edit menu, app options |
-| `Sources/ZoopApp/NotchDock` | Screen metrics, floating panel, outside-click/key monitors, glass, drawer, status and ticket animation, live activities |
-| `Sources/ZoopApp/Companion` | Native Canvas pixel mascot and one searching-globe renderer |
-| `Sources/ZoopApp/Chat` | Conversation, progressive plan, confirmation, input, scroll behavior |
-| `Sources/ZoopApp/Preview` | Simulated browser, comparison table, autonomous ghost pointer |
-| `Sources/ZoopApp/State` | Observable UI state, streaming, task lifecycle, persistence |
-| `Sources/ZoopApp/Notifications` | Approval chime, completion voice playback, and file exports |
-| `Sources/ZoopApp/Resources` | Bundled completion MP3 from the supplied ElevenLabs recording |
-| `Sources/ZoopShared/Tasks` | Foundation-only Codable/Sendable messages, tasks, snapshots, and task transitions |
-| `Sources/ZoopAgents/Facade` | Provider boundary and local demo service |
-| `Sources/ZoopAgents/Agents/Chat` | Sample scenarios and Markdown report generation |
+## Code map
 
-The panel uses actual `NSScreen` safe-area and auxiliary top-area measurements. It updates its frame when displays change. Its real window bounds shrink when collapsed, and it only becomes key when the user expands it. Background task progress does not activate or raise another app. The optional **Float above full-screen apps** setting switches from `.statusBar` to `.screenSaver` level.
+- `ZoopAgents/Agents/Chat/ChatAgent.swift`: conversation and plan_task handoff; no desktop tools.
+- `ZoopAgents/Agents/Planner/`: read-only planner and approved plan execution/repair.
+- `ZoopAgents/Facade/CompanionService.swift`: chat → planner and explicit execution entry points.
+- `ZoopShared/Tasks/TaskPlan.swift`: Codable executable plan shared with UI persistence.
+- `ZoopApp/State/CompanionStore.swift`: one-task gate, button approval, events and actual results.
+- `ZoopApp/State/CompanionPrompter.swift`: in-app questions and cancellation-safe answers.
+- `ZoopApp/Chat/ChatView.swift`: conversation, plan details and Execute the plan.
+- `ZoopApp/NotchDock/LiveActivitiesView.swift`: real screenshots, progress, questions and results.
 
-## Current execution scope
-
-This is a functional **native UI preview**. `DemoCompanionService` prepares deterministic plans and advances sample progress. The desk, listings, prices, and research are illustrative, clearly identified in the UI and exported reports. The UI is not yet connected to a model API, real browser automation, or the repository’s session helper. The persistent helper/session bridge is implemented separately and documented in [SessionBridge.md](SessionBridge.md).
-
-To connect a real agent later, implement `CompanionService` and extend the execution event boundary. Keep desktop-session creation and input/capture capabilities in `ZoopHelper`; keep AppKit and SwiftUI in `ZoopApp`. Do not replace the explicit approval transition with automatic execution.
+The older simulated desk and sample research fixtures remain in source for reference/tests; the live app does not select them.
 
 ## Validation
 
-The implementation was written on a Linux host without Xcode or the Swift compiler. Swift source syntax, the bundle plist, shell syntax, and whitespace were checked locally. These checks do **not** establish that the app compiles or renders correctly on macOS.
+Automated tests cover ordinary chat without helper use, concrete-task planning without execution, rejecting chat-side desktop calls, explicit button approval, a second task blocked during execution, progress versus completion, real report exports, failure states, snapshot compatibility/backup, interrupted-task restoration and answering/cancelling in-app questions. Planner, runner, transport and model adapter tests also run with the same package.
 
-The included `Native Swift UI` GitHub Actions workflow builds, tests, and bundles on macOS after the changes are pushed, or when manually dispatched. Its results have not been run from this workspace. Run `swift build` and `swift test` on a Mac before treating the native implementation as verified.
+The native executable and application bundle are built on the project's macOS toolchain. Live model/provider use and visual acceptance on the user's configured desktop remain manual checks. A quick manual check is: greet Zoop, request a Calculator calculation, inspect the plan, click Execute the plan, watch the observed screen and read the returned result. Verify that no task actions occur before approval and no new request can start until it finishes.
 
-Tests cover approval gating, dispatch arrival, pause/resume, cancellation, terminal completion, safe restoration, scenario selection, refinement context, unique export names, and report disclosure.
+## Approval modes, questions and retries
 
-Manual Mac checks:
+Each plan card has a mode picker next to Execute the plan. **Ask first** (the default for every new plan) stops before each step the planner marked as risky and lets the executor ask before anything hard to undo. **Auto** treats every action the plan lists as approved: planned confirmations are skipped and the executor is told not to ask about them. It still asks before a hard-to-undo action the plan does not list (a different recipient, an extra purchase, anything a web page asks for), and still asks for information only the person has. It never types passwords, payment details or one-time codes.
 
-1. Launch on a notched Mac and on an external display. Check top alignment, camera clearance, sharp text, and transparent rounded corners.
-2. Expand, type, close by clicking another app, and reopen. Confirm the draft and latest chat remain visible.
-3. Approve a plan, close during the ticket flight, and verify the task still appears in Live Activities.
-4. Run two tasks. Pause one, stop one, and verify neither advances while paused/stopped. Resume a task restored after relaunch.
-5. Close Zoop while a task runs. Confirm the working count excludes paused work. At completion, confirm its tab retires, the voice plays once, the mascot celebrates during playback, a card names the task, and the report is present in Finder. Click the card to open that specific report. Repeat with concurrent completions, mute, reset, relaunch, and while actively interacting in the drawer.
-6. Verify normal typing, clicking, app switching, Spaces, and full-screen behavior while a task runs.
-7. Test Reduced Motion, VoiceOver labels, sound toggling, and a save location that is not writable.
+Questions use `ask_user` with a `kind`: `confirm` shows Allow and Deny, `info` shows a reply field. While the notch is closed, each question is also posted as a macOS notification with the same choices (Reply opens a text field). Clicking the notification opens the question in the notch; answering in either place removes the notification. macOS asks for notification permission the first time.
 
-Apple references: [NSPanel](https://developer.apple.com/documentation/appkit/nspanel), [notch-aware screen geometry](https://developer.apple.com/documentation/appkit/nsscreen/auxiliarytopleftarea-uglc), [NSHostingView sizing](https://developer.apple.com/documentation/swiftui/nshostingview/sizingoptions), [scroll geometry](https://developer.apple.com/documentation/swiftui/scrollgeometry).
+When an action fails, the executor must find out why and try a different method. After 3 failed actions in a row (a successful action resets the count) further actions are refused and it must call `finish_task` with `success: false`, what it tried and `next_step`; the suggested next step is shown with the result. If it keeps trying to act, the run stops with the list of failed attempts.
+
+## System permission cards
+
+During a live task, recognized macOS consent dialogs pause desktop tools and show a permission card. The message identifies the requesting app using the system's own text; buttons retain the exact labels, including distinctions such as Allow Once versus Always Allow. If the notch is closed, the notification carries the same choices (up to four; open the notch for all choices).
+
+The selected choice goes directly to the session helper, without asking the executor model to interpret approval or find coordinates. The helper revalidates the request, attempts the button once, and checks dismissal. Auto mode never supplies consent. “Leave unchanged and end task” dismisses the Zoop card without touching the system prompt. If the dialog changed, it must be reviewed again. If macOS refuses the press, the task reports that direct interaction is needed. This version handles known system dialog hosts, not arbitrary web-page prompts, protected authentication screens, or a general remote-control surface.
+
+## Expanded session preview
+
+The expand icon beside the task title in Agent workspace opens one separate floating preview window. It starts centered on the screen containing the pointer at about half the screen's available width and height. Drag the standard title bar to move it and any edge or corner to resize its width and height independently. Closing it leaves the task running; reopening reuses its last size and position during the app session. The zoom/full-screen button is hidden.
+
+The window observes the same task-scoped screenshots as the notch, so updates arrive when the agent observes its workspace. It does not add continuous capture or remote input. The screenshot scales to fit without distortion, and a removed/reset task cannot display another task's screenshot. Closing the notch does not close the floating preview.
