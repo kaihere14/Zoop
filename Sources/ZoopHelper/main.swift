@@ -50,6 +50,10 @@ do {
 
 let permissions = PermissionStatus.current()
 helperLog("ZoopHelper \(helperVersion) as \(NSUserName()) (uid \(getuid())); screenCapture=\(permissions.screenCapture) accessibility=\(permissions.accessibility) postEvent=\(permissions.postEvent)")
+do {
+    let desktop = try AgentDesktopClient.installed()
+    helperLog("dialog backend: \(desktop.map { "agent-desktop at \($0.executable.path)" } ?? "native AXPress (agent-desktop not installed)")")
+} catch { helperLog("dialog backend configuration error: \(error)") }
 PermissionStatus.requestMissing()
 
 // launchd stops the job with SIGTERM. Clean up the socket file so the next start is clean.

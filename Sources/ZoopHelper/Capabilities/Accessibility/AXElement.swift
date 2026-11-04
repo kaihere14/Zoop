@@ -118,10 +118,18 @@ struct AXElement {
     }
 
     var children: [AXElement] {
+        readableChildren ?? []
+    }
+
+    /// An AX IPC failure is unknown, not an empty tree. Dismissal checks must keep
+    /// that distinction or they can report a still-open sheet as closed.
+    var readableChildren: [AXElement]? {
         // Bound each child list as well as the overall tree walk.
         var values: CFArray?
-        guard Self.read({ AXUIElementCopyAttributeValues(raw, kAXChildrenAttribute as CFString, 0, 1000, &values) }) == .success else { return [] }
-        return (values as? [AXUIElement] ?? []).map(AXElement.init)
+        let error = Self.read { AXUIElementCopyAttributeValues(raw, kAXChildrenAttribute as CFString, 0, 1000, &values) }
+        if error == .attributeUnsupported || error == .noValue { return [] }
+        guard error == .success, let children = values as? [AXUIElement], children.count < 1000 else { return nil }
+        return children.map(AXElement.init)
     }
 
     var pid: pid_t { var pid: pid_t = 0; AXUIElementGetPid(raw, &pid); return pid }

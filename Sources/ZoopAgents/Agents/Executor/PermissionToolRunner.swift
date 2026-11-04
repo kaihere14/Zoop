@@ -26,7 +26,7 @@ public struct PermissionToolRunner: ToolRunning {
     public init(tools: any ToolRunning, permissions: any PermissionHandling, prompter: any UserPrompting,
                 consentPolls: Int = 8, onEvent: @escaping @Sendable (AgentEvent) -> Void) {
         self.tools = tools; self.permissions = permissions; self.prompter = prompter
-        self.consentPolls = consentPolls; self.onEvent = onEvent
+        self.consentPolls = max(0, consentPolls); self.onEvent = onEvent
     }
 
     public func extraModelTools() async -> [ModelTool] { await tools.extraModelTools() }
@@ -60,21 +60,28 @@ public struct PermissionToolRunner: ToolRunning {
             if name == SessionToolName.saveDocument.rawValue, let declined = await approveSave(args) { return declined }
             if name == SessionToolName.sendEmail.rawValue, let declined = await approveEmail(args) { return declined }
             var result = await tools.call(name, argumentsJSON: argumentsJSON)
-            let answered = try await resolvePermissions()
-            // The action asked macOS for consent (for example Automation) and did not run. The
-            // person has now answered the system dialog, so run it once more.
-            if result.content["error"] == "consent_pending" {
-                // macOS may draw its dialog a moment after the request; wait for it so the
-                // person sees the card before the action is tried again.
+            var answered = try await resolvePermissions()
+            // consent_pending guarantees the task action has not run. A save can ask for
+            // Automation, then Files & Folders, so allow a bounded chain of prerequisites.
+            var consentAttempts = 0
+            while result.content["error"] == "consent_pending", consentAttempts < 4 {
                 if !answered {
                     for _ in 0..<consentPolls {
-                        if let pending = try? await permissions.permissionPrompts(), !pending.isEmpty { break }
                         try await Task.sleep(for: .milliseconds(500))
+                        answered = try await resolvePermissions()
+                        if answered { break }
                     }
-                    try await resolvePermissions()
                 }
+                guard answered else {
+                    return ToolResult(tool: name, isError: true, content: ["ok": false, "error": "consent_pending",
+                        "message": "macOS requested consent, but no readable permission dialog was answered. Check the agent session and its Accessibility permissions.",
+                        "requires_observation": true, "retry": "no",
+                        "next": "Pause for the person. The action was not repeated and no permission choice was inferred."])
+                }
+                try Task.checkCancellation()
+                consentAttempts += 1
                 result = await tools.call(name, argumentsJSON: argumentsJSON)
-                try await resolvePermissions()
+                answered = try await resolvePermissions()
             }
             // A dialog the action opened goes to the person straight away.
             for app in Self.apps(arguments: args, result: result) {
@@ -125,7 +132,7 @@ public struct PermissionToolRunner: ToolRunning {
 
     /// Shows the app's open dialog to the person, if there is one.
     private func answerOpenDialog(in app: String) async throws -> ToolResult? {
-        guard let dialog = try? await permissions.appDialogs(bundleID: app).first, dialog.kind == .appDialog else { return nil }
+        guard let dialog = try await permissions.appDialogs(bundleID: app).first, dialog.kind == .appDialog else { return nil }
         return try await resolveAppDialog(dialog.ownerApp)
     }
 
@@ -147,7 +154,7 @@ public struct PermissionToolRunner: ToolRunning {
         content["human_choice"] = answered.content["human_choice"]
         content["requires_observation"] = true
         content["next"] = answered.content["next"]
-        return ToolResult(tool: action.tool, isError: answered.isError, content: .object(content), image: action.image)
+        return ToolResult(tool: action.tool, isError: action.isError || answered.isError, content: .object(content), image: action.image)
     }
 
     private func resolveAppDialog(_ bundleID: String) async throws -> ToolResult {
@@ -163,7 +170,7 @@ public struct PermissionToolRunner: ToolRunning {
             }
             onEvent(.progress(note: "Waiting for your choice in \(prompt.ownerName)", step: nil, percent: nil))
             onEvent(.question(prompt.message))
-            guard let choice = await prompter.choosePermission(prompt), let selected = prompt.choices.first(where: { $0.id == choice }) else {
+            guard let choice = await prompter.choosePermission(prompt), let selected = prompt.choices.first(where: { $0.id == choice && $0.enabled }) else {
                 throw PermissionInterruption.message("The person left the app dialog unchanged and ended the task.")
             }
             onEvent(.answer("\(prompt.ownerName): \(selected.title)"))
@@ -197,7 +204,7 @@ public struct PermissionToolRunner: ToolRunning {
             guard let prompt = try await permissions.permissionPrompts().first else { return answered }
             onEvent(.progress(note: "Waiting for your permission choice", step: nil, percent: nil))
             onEvent(.question(prompt.message))
-            guard let choice = await prompter.choosePermission(prompt), prompt.choices.contains(where: { $0.id == choice }) else {
+            guard let choice = await prompter.choosePermission(prompt), prompt.choices.contains(where: { $0.id == choice && $0.enabled }) else {
                 throw PermissionInterruption.message("The person dismissed the permission request. The dialog was left unchanged.")
             }
             onEvent(.answer("System dialog: \(prompt.choices.first { $0.id == choice }!.title)"))

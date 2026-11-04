@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CoreGraphics
 import ZoopShared
 
 /// System consent UI is hosted separately from the app asking for access (for example,
@@ -38,6 +39,24 @@ enum PermissionDialogs {
         return (dialog, index)
     }
 
+    /// Correlate the owning AX window with its CoreGraphics ID. Never guess a window
+    /// when bounds or process ownership are missing or ambiguous.
+    static func windowID(for dialog: Observed) -> String? {
+        let window = dialog.window.ancestors(limit: 25).first { $0.string(kAXRoleAttribute) == kAXWindowRole }
+            ?? dialog.window
+        guard let bounds = window.info.frame else { return nil }
+        let windows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let matches = windows.filter {
+            guard ($0[kCGWindowOwnerPID as String] as? Int32) == dialog.window.pid,
+                  let raw = $0[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: raw) else { return false }
+            return abs(rect.origin.x - bounds.x) <= 0.5 && abs(rect.origin.y - bounds.y) <= 0.5
+                && abs(rect.width - bounds.width) <= 0.5 && abs(rect.height - bounds.height) <= 0.5
+        }
+        guard matches.count == 1, let number = matches[0][kCGWindowNumber as String] as? Int else { return nil }
+        return "w-\(number)"
+    }
+
     static func scan(previous: [Observed], bundleID: String? = nil) -> [Observed] {
         var result: [Observed] = []
         let deadline = ContinuousClock.now + .seconds(3)
@@ -72,7 +91,8 @@ enum PermissionDialogs {
                     let role = element.string(kAXRoleAttribute) ?? ""
                     if element.string(kAXSubroleAttribute) == kAXSecureTextFieldSubrole { secure = true; break }
                     if [kAXStaticTextRole, "AXHeading"].contains(role),
-                       let text = element.string(kAXValueAttribute) ?? element.string(kAXTitleAttribute) ?? element.string(kAXDescriptionAttribute),
+                       let text = [element.string(kAXValueAttribute), element.string(kAXTitleAttribute), element.string(kAXDescriptionAttribute)]
+                        .compactMap({ $0 }).first(where: { !$0.isEmpty }),
                        !text.isEmpty, !texts.contains(text) {
                         let trimmed = text.trimmingCharacters(in: .whitespaces)
                         if bundleID != nil, trimmed.hasSuffix(":"), trimmed.count <= 40 { fieldLabel = String(trimmed.dropLast()) }
@@ -89,7 +109,8 @@ enum PermissionDialogs {
                     // Disabled buttons are kept (marked) so the person sees, for example, that Save is greyed out.
                     let isEnabled = element.attribute(kAXEnabledAttribute) as? Bool != false
                     if role == kAXButtonRole, !isEnabled || element.actions.contains(kAXPressAction),
-                       let label = element.string(kAXTitleAttribute) ?? element.string(kAXDescriptionAttribute),
+                       let label = [element.string(kAXTitleAttribute), element.string(kAXDescriptionAttribute)]
+                        .compactMap({ $0 }).first(where: { !$0.isEmpty }),
                        !label.isEmpty, label != "Help", label != "?", labels.count < 8 {
                         buttons.append(element); labels.append(label); enabled.append(isEnabled)
                     }
@@ -134,7 +155,7 @@ enum PermissionDialogs {
                 if isDialog(role: role, subrole: node.element.string(kAXSubroleAttribute),
                             modal: node.element.attribute(kAXModalAttribute) as? Bool == true) { found.append(node) }
                 guard node.depth < 8, ![kAXMenuBarRole, kAXMenuRole, kAXTextAreaRole, kAXTableRole, kAXOutlineRole, "AXBrowser", "AXWebArea"].contains(role) else { continue }
-                let children = node.element.children
+                guard let children = node.element.readableChildren else { return (found, false) }
                 // An attached sheet blocks the content behind it. Follow the sheet branch
                 // rather than spending the budget walking Maps' entire map/view hierarchy.
                 let sheets = children.filter { $0.string(kAXRoleAttribute) == kAXSheetRole }

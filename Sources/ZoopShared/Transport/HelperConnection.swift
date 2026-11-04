@@ -70,10 +70,12 @@ public actor HelperConnection {
         public var input: Duration
         /// quitApps waits for apps to finish quitting.
         public var quitApps: Duration
+        /// Dialog rescan, external snapshot/action, and observed dismissal.
+        public var permissionResponse: Duration
 
         public init(ping: Duration = .seconds(2), info: Duration = .seconds(5), capture: Duration = .seconds(15),
                     query: Duration = .seconds(10), openApp: Duration = .seconds(15), input: Duration = .seconds(10),
-                    quitApps: Duration = .seconds(20)) {
+                    quitApps: Duration = .seconds(20), permissionResponse: Duration = .seconds(35)) {
             self.ping = ping
             self.info = info
             self.capture = capture
@@ -81,6 +83,7 @@ public actor HelperConnection {
             self.openApp = openApp
             self.input = input
             self.quitApps = quitApps
+            self.permissionResponse = permissionResponse
         }
 
         func timeout(for request: HelperRequest) -> Duration {
@@ -90,7 +93,8 @@ public actor HelperConnection {
             case .capture: capture
             case .inspect, .elements, .permissionPrompts, .appDialogs: query
             case .openApp: openApp
-            case .input, .respondToPermission: input
+            case .input: input
+            case .respondToPermission: permissionResponse
             case .quitApps: quitApps
             }
         }

@@ -25,6 +25,7 @@ actor PermissionSource: PermissionHandling {
     /// A system consent dialog that appears after the next action runs.
     private var queued: PermissionPrompt?
     func queueSystemPrompt(_ prompt: PermissionPrompt) { queued = prompt }
+    func showSystemPrompt(_ prompt: PermissionPrompt) { pending = [prompt] }
     func appDialogs(bundleID: String) async throws -> [PermissionPrompt] { appPrompt.map { [$0] } ?? [] }
     func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
         selections.append((promptID, choiceID))
@@ -185,6 +186,80 @@ actor PermissionPrompter: UserPrompting {
         #expect(!result.isError && result.content["verified"] == true)
         #expect(await tools.calls == 2)
         #expect(await source.selections.map(\.1) == ["allow"])
+    }
+
+    @Test func missingConsentDialogDoesNotRepeatTheTaskAction() async {
+        let source = PermissionSource(), tools = ConsentThenSave()
+        await source.setAppDialog(nil)
+        let result = await PermissionToolRunner(tools: tools, permissions: source,
+            prompter: PermissionPrompter([], answers: ["yes"]), consentPolls: 0, onEvent: { _ in })
+            .call("save_document", argumentsJSON: #"{"bundle_id":"com.apple.TextEdit","path":"~/Documents/Quote.rtf"}"#)
+        #expect(result.isError && result.content["error"] == "consent_pending")
+        #expect(await tools.calls == 1)
+        #expect(await source.selections.isEmpty)
+    }
+
+    @Test func automationThenFolderConsentBothFinishBeforeSaving() async {
+        let source = PermissionSource()
+        await source.setAppDialog(nil)
+        let tools = SequentialConsent(source: source)
+        let prompter = PermissionPrompter(["allow", "folder-allow"], answers: ["yes"])
+        let result = await PermissionToolRunner(tools: tools, permissions: source, prompter: prompter, consentPolls: 0, onEvent: { _ in })
+            .call("save_document", argumentsJSON: #"{"bundle_id":"com.apple.TextEdit","path":"~/Documents/Quote.rtf"}"#)
+        #expect(!result.isError && result.content["verified"] == true)
+        #expect(await tools.calls == 3)
+        #expect(await source.selections.map(\.1) == ["allow", "folder-allow"])
+    }
+
+    @Test func dialogReadFailureStopsInputInsteadOfBeingSilentlyIgnored() async {
+        let tools = FakeTools()
+        let result = await PermissionToolRunner(tools: tools, permissions: UnreadableDialogs(),
+            prompter: PermissionPrompter([]), onEvent: { _ in })
+            .call("click", argumentsJSON: #"{"bundle_id":"com.apple.TextEdit","x":1,"y":2}"#)
+        #expect(result.isError && result.content["error"] == "setup_error")
+        #expect(await tools.called.isEmpty)
+    }
+
+    @Test func aDisabledChoiceCannotBeDispatchedByThePrompter() async {
+        let source = PermissionSource(), tools = FakeTools()
+        await source.setAppDialog(Self.saveSheet)
+        let result = await PermissionToolRunner(tools: tools, permissions: source, prompter: PermissionPrompter(["save"]), onEvent: { _ in })
+            .call("request_dialog_help", argumentsJSON: #"{"bundle_id":"com.apple.TextEdit"}"#)
+        #expect(result.isError)
+        #expect(await source.selections.isEmpty)
+    }
+
+    @Test func closingADialogCannotTurnAFailedActionIntoSuccess() {
+        let action = ToolResult(tool: "click", isError: true, content: ["ok": false, "error": "unsupported"])
+        let answer = ToolResult(tool: "request_dialog_help", isError: false, content: ["ok": true, "human_choice": "OK"])
+        #expect(PermissionToolRunner.merge(answer, into: action).isError)
+    }
+}
+
+actor SequentialConsent: ToolRunning {
+    let source: PermissionSource
+    private(set) var calls = 0
+    init(source: PermissionSource) { self.source = source }
+    func call(_ name: String, argumentsJSON: String) async -> ToolResult {
+        calls += 1
+        if calls == 1 { await source.showSystemPrompt(locationPermission) }
+        if calls == 2 {
+            await source.showSystemPrompt(PermissionPrompt(id: "folder", ownerApp: "system", ownerName: "System", message: "Documents access",
+                choices: [.init(id: "folder-allow", title: "OK")]))
+        }
+        return calls <= 2
+            ? ToolResult(tool: name, isError: true, content: ["ok": false, "error": "consent_pending"])
+            : ToolResult(tool: name, isError: false, content: ["ok": true, "verified": true])
+    }
+}
+
+struct UnreadableDialogs: PermissionHandling {
+    func permissionPrompts() async throws -> [PermissionPrompt] { [] }
+    func appDialogs(bundleID: String) async throws -> [PermissionPrompt] {
+        throw BridgeError.helperFailure(HelperFailure(.permissionDenied, "Accessibility missing"))
+    }
+    func respondToPermission(promptID: String, choiceID: String) async throws -> ActionReport {
+        throw BridgeError.helperFailure(HelperFailure(.notFound, "No dialog"))
     }
 }
 

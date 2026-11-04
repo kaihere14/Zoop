@@ -4,6 +4,13 @@ import Testing
 @testable import ZoopShared
 
 @Suite struct RetryPolicyTests {
+    @Test func permissionResponsesHaveTheirOwnBudgetAndAreNeverReplayable() {
+        let timeouts = HelperConnection.RequestTimeouts(input: .seconds(2), permissionResponse: .seconds(35))
+        let choice = HelperRequest.respondToPermission(promptID: "dialog", choiceID: "allow")
+        #expect(timeouts.timeout(for: choice) == .seconds(35))
+        #expect(!choice.isReplayable)
+    }
+
     @Test func defaultsAreThreeRetriesWithDoublingDelays() {
         let policy = RetryPolicy()
         #expect(policy.maxAttempts == 4)

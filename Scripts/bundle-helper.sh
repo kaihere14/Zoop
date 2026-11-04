@@ -16,11 +16,15 @@ fi
 swift build -c release --product ZoopHelper
 swift build -c release --product zoop-bridge
 BIN="$(swift build -c release --show-bin-path)"
+DESKTOP="$(bash Scripts/fetch-agent-desktop.sh)"
 
 APP=build/ZoopHelper.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/Resources/Licenses"
 cp "$BIN/ZoopHelper" "$APP/Contents/MacOS/ZoopHelper"
+cp "$DESKTOP/agent-desktop" "$DESKTOP/agent-desktop-macos-helper" "$APP/Contents/MacOS/"
+cp "$DESKTOP/LICENSE" "$APP/Contents/Resources/Licenses/agent-desktop.txt"
 cp Resources/InfoPlists/ZoopHelper-Info.plist "$APP/Contents/Info.plist"
 cp "$BIN/zoop-bridge" build/zoop-bridge
 
@@ -30,6 +34,9 @@ if [[ -z "$IDENTITY" ]]; then
     echo "warning: signing identity '$IDENTITY_NAME' not found; using ad-hoc signing." >&2
     echo "         Permissions granted to the helper will reset on every rebuild." >&2
 fi
+# Sign nested executables first, under stable identities, then seal the outer app.
+codesign --force --sign "${IDENTITY:--}" --identifier com.zoop.agent-desktop "$APP/Contents/MacOS/agent-desktop"
+codesign --force --sign "${IDENTITY:--}" --identifier com.zoop.agent-desktop-macos-helper "$APP/Contents/MacOS/agent-desktop-macos-helper"
 codesign --force --sign "${IDENTITY:--}" --identifier com.zoop.helper "$APP"
 codesign -d -r- "$APP" 2>&1 | grep designated
 

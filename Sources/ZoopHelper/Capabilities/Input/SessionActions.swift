@@ -58,26 +58,66 @@ actor SessionActions {
             _ = try appDialogs(bundleID: cached.prompt.ownerApp)
         } else { _ = try permissionPrompts() }
         let (dialog, index) = try PermissionDialogs.selection(promptID: promptID, choiceID: choiceID, in: permissionDialogs + appDialogCache)
+        let target = dialog.buttons[index].info
+        let desktop = try AgentDesktopClient.installed()
+        var reference: String?
+        if let desktop {
+            let surface = dialog.window.string(kAXRoleAttribute) == kAXSheetRole ? "sheet"
+                : dialog.prompt.kind == .systemPermission ? "alert" : "window"
+            let owners = NSWorkspace.shared.runningApplications.filter { $0.localizedName == dialog.prompt.ownerName && !$0.isTerminated }
+            guard owners.count == 1, owners[0].processIdentifier == dialog.window.pid else {
+                throw HelperFailure(.unsupported, "The dialog's app name is ambiguous. Nothing was pressed; inspect the agent session.")
+            }
+            let snapshot = try await desktop.snapshot(app: dialog.prompt.ownerName, surface: surface,
+                                                      windowID: PermissionDialogs.windowID(for: dialog))
+            reference = try AgentDesktopClient.reference(in: snapshot, target: target, label: dialog.labels[index])
+            try Task.checkCancellation()
+            // The snapshot can take seconds. Recheck the human's exact request and the
+            // native button after it, before consuming the choice or sending an action.
+            if dialog.prompt.kind == .appDialog { _ = try appDialogs(bundleID: dialog.prompt.ownerApp) }
+            else { _ = try permissionPrompts() }
+            let (current, currentIndex) = try PermissionDialogs.selection(promptID: promptID, choiceID: choiceID,
+                                                                         in: permissionDialogs + appDialogCache)
+            guard CFEqual(current.buttons[currentIndex].raw, dialog.buttons[index].raw) else {
+                throw HelperFailure(.notFound, "The reviewed button changed while agent-desktop observed it. Nothing was pressed; review the new dialog.")
+            }
+        }
+        try Task.checkCancellation()
         // Consume before performing: even an AX error can mean the press happened.
         permissionDialogs.removeAll { $0.prompt.id == promptID }
         appDialogCache.removeAll { $0.prompt.id == promptID }
-        let target = dialog.buttons[index].info
-        if dialog.prompt.kind == .appDialog {
-            // Focus the existing dialog, never reopen the app (which may dismiss a sheet).
-            bringForward(dialog.buttons[index])
-            _ = dialog.window.perform(kAXRaiseAction)
+        var axError: Int?
+        var delivery: String
+        if let desktop, let reference {
+            do { delivery = "agent-desktop: \(try await desktop.click(reference))." }
+            catch let failure as HelperFailure where failure.code == .notFound { throw failure }
+            catch {
+                try Task.checkCancellation()
+                // A failed mutation can still have landed. Observe, never fall back to AXPress.
+                delivery = "agent-desktop: \(error)."
+            }
+        } else {
+            if dialog.prompt.kind == .appDialog {
+                bringForward(dialog.buttons[index])
+                _ = dialog.window.perform(kAXRaiseAction)
+            }
+            let error = dialog.buttons[index].perform(kAXPressAction)
+            axError = Int(error.rawValue)
+            delivery = "Native AXPress returned \(error.rawValue) (agent-desktop is not installed)."
         }
-        let error = dialog.buttons[index].perform(kAXPressAction)
         var dismissed = false
-        for _ in 0..<5 {
-            try await Task.sleep(for: .milliseconds(100))
+        let deadline = ContinuousClock.now + .seconds(4)
+        repeat {
+            try Task.checkCancellation()
             if PermissionDialogs.isPresent(dialog) == false { dismissed = true; break }
             if NSRunningApplication(processIdentifier: dialog.window.pid)?.isTerminated != false { dismissed = true; break }
-        }
+            try await Task.sleep(for: .milliseconds(100))
+        } while ContinuousClock.now < deadline
         return ActionReport(action: "permissionChoice", method: .axPress, target: target, pid: target.pid,
-            app: target.app, axError: Int(error.rawValue), landed: dismissed ? true : nil,
-            detail: dismissed ? "Selected \(dialog.labels[index]); the dialog closed. \(dialog.prompt.kind == .appDialog ? "Verify the app's result separately; this is not proof that a file was saved." : "This does not independently verify the permission grant.")"
-                              : "Selected \(dialog.labels[index]), but the dialog is still present. macOS may require direct interaction in the agent session. No automatic retry was sent.")
+            app: target.app, axError: axError, landed: dismissed ? true : nil,
+            detail: delivery + " " + (dismissed
+                ? "Selected \(dialog.labels[index]); the dialog closed. \(dialog.prompt.kind == .appDialog ? "Verify the app's result separately; this is not proof that a file was saved." : "This does not independently verify the permission grant.")"
+                : "The \(dialog.labels[index]) choice was attempted, but dialog dismissal could not be confirmed within four seconds. macOS may require direct interaction in the agent session. No automatic retry was sent."))
     }
 
     func perform(_ action: InputAction) async throws -> ActionReport {

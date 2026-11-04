@@ -22,3 +22,8 @@ jobs:
         run: swift test
       - name: Bundle local app
         run: bash Scripts/bundle.sh
+      - name: Bundle helper with pinned macOS agent-desktop
+        run: |
+          bash Scripts/bundle-helper.sh
+          build/ZoopHelper.app/Contents/MacOS/agent-desktop version
+          codesign --verify --deep --strict build/ZoopHelper.app
